@@ -1,0 +1,28 @@
+# Credentials / secrets
+*.properties
+*.env
+*.pem
+
+# Java build artifacts
+target/
+*.class
+*.jar
+*.war
+
+# Decompiled / archived source dumps
+decompiled/
+*.zip
+
+# Go build artifacts
+*.o
+*.a
+/tlf-service
+/outgoing-service
+
+# Logs / outputs
+*.log
+*.csv
+*.tmp
+
+# OS
+.DS_Store

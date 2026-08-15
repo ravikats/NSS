@@ -1,0 +1,33 @@
+server:
+  port: 8085
+
+spring:
+  datasource:
+    url: jdbc:h2:mem:irf-service;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+
+irf:
+  service:
+    # Shared secret required on every request (query param "sec").
+    sec: ${IRF_SERVICE_SEC:change-me}
+    # Network -> calculator bean name overrides (optional).
+    calculators:
+      VISA: visaIrfCalculationService
+      VSMS: visaIrfCalculationService
+      MCI: mcIrfCalculationService
+      MDS: mcIrfCalculationService
+      UAESWITCH: uaeSwitchIrfCalculationService
+      JAYWAN: jaywanIrfCalculationService
+      OMANNET: omanNetIrfCalculationService
+  exchange-rate-aed: 3.67
+  exchange-rate-omr: 0.38
+  exchange-rate: 1.0

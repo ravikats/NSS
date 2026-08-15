@@ -1,0 +1,102 @@
+/*
+ * Decompiled with CFR 0.152.
+ * 
+ * Could not load the following classes:
+ *  com.empay.cryptapi.EncryptResponseVo
+ */
+package com.empay.cryptapi;
+
+import java.util.Map;
+
+public class EncryptResponseVo {
+    private String respCode;
+    private String respMsg;
+    private String logRefId;
+    private Map<String, String> uuids;
+
+    public String getRespCode() {
+        return this.respCode;
+    }
+
+    public String getRespMsg() {
+        return this.respMsg;
+    }
+
+    public String getLogRefId() {
+        return this.logRefId;
+    }
+
+    public Map<String, String> getUuids() {
+        return this.uuids;
+    }
+
+    public void setRespCode(String respCode) {
+        this.respCode = respCode;
+    }
+
+    public void setRespMsg(String respMsg) {
+        this.respMsg = respMsg;
+    }
+
+    public void setLogRefId(String logRefId) {
+        this.logRefId = logRefId;
+    }
+
+    public void setUuids(Map<String, String> uuids) {
+        this.uuids = uuids;
+    }
+
+    public boolean equals(Object o) {
+        if (o == this) {
+            return true;
+        }
+        if (!(o instanceof EncryptResponseVo)) {
+            return false;
+        }
+        EncryptResponseVo other = (EncryptResponseVo)o;
+        if (!other.canEqual((Object)this)) {
+            return false;
+        }
+        String this$respCode = this.getRespCode();
+        String other$respCode = other.getRespCode();
+        if (this$respCode == null ? other$respCode != null : !this$respCode.equals(other$respCode)) {
+            return false;
+        }
+        String this$respMsg = this.getRespMsg();
+        String other$respMsg = other.getRespMsg();
+        if (this$respMsg == null ? other$respMsg != null : !this$respMsg.equals(other$respMsg)) {
+            return false;
+        }
+        String this$logRefId = this.getLogRefId();
+        String other$logRefId = other.getLogRefId();
+        if (this$logRefId == null ? other$logRefId != null : !this$logRefId.equals(other$logRefId)) {
+            return false;
+        }
+        Map this$uuids = this.getUuids();
+        Map other$uuids = other.getUuids();
+        return !(this$uuids == null ? other$uuids != null : !((Object)this$uuids).equals(other$uuids));
+    }
+
+    protected boolean canEqual(Object other) {
+        return other instanceof EncryptResponseVo;
+    }
+
+    public int hashCode() {
+        int PRIME = 59;
+        int result = 1;
+        String $respCode = this.getRespCode();
+        result = result * 59 + ($respCode == null ? 43 : $respCode.hashCode());
+        String $respMsg = this.getRespMsg();
+        result = result * 59 + ($respMsg == null ? 43 : $respMsg.hashCode());
+        String $logRefId = this.getLogRefId();
+        result = result * 59 + ($logRefId == null ? 43 : $logRefId.hashCode());
+        Map $uuids = this.getUuids();
+        result = result * 59 + ($uuids == null ? 43 : ((Object)$uuids).hashCode());
+        return result;
+    }
+
+    public String toString() {
+        return "EncryptResponseVo(respCode=" + this.getRespCode() + ", respMsg=" + this.getRespMsg() + ", logRefId=" + this.getLogRefId() + ", uuids=" + String.valueOf(this.getUuids()) + ")";
+    }
+}
+

@@ -1,0 +1,16 @@
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: update
+  datasource:
+    url: jdbc:h2:mem:irf-test;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+irf:
+  service:
+    sec: test-secret
+  exchange-rate-aed: 3.67
+  exchange-rate-omr: 0.38
+  exchange-rate: 1.0
