@@ -9,22 +9,24 @@ import (
 // OutgoingConfig carries the institution/system configuration read from the
 // environment (the Java application.properties equivalents).
 type OutgoingConfig struct {
-	InsCode           int
-	InsShortName      string
-	UpdatedUser       int
-	MastercardSysCode int
-	VisaSysCode       int
-	JaywanSysCode     int
-	AmexSysCode       int
-	MercurySysCode    int
-	GCOSysCode        int
-	GOCSysCode        int
-	ReconOutDir       string
-	ProcessingMode    string
-	CurrencyCodeKafka string
-	ProductCode       string
-	FileCategory      string
-	VersionNumber     string
+	InsCode            int
+	InsShortName       string
+	UpdatedUser        int
+	MastercardSysCode  int
+	VisaSysCode        int
+	JaywanSysCode      int
+	AmexSysCode        int
+	MercurySysCode     int
+	UnionPaySysCode    int
+	GCOSysCode         int
+	GOCSysCode         int
+	ReconOutDir        string
+	ProcessingMode     string
+	CurrencyCodeKafka  string
+	ProductCode        string
+	FileCategory       string
+	VersionNumber      string
+	UnionPayVersionTag string
 }
 
 // OutgoingService orchestrates the outgoing file generation flow
@@ -107,6 +109,13 @@ func (s *OutgoingService) getTxnCount(ctx context.Context, network string, insCo
 				return 0
 			}
 			return n
+		case "UNIONPAY":
+			n, err := s.store.CountUnionPayWorkLessThanEqual(ctx, insCode, 3, *toDate)
+			if err != nil {
+				logOutsvc("CountUnionPayWorkLessThanEqual", err)
+				return 0
+			}
+			return n
 		}
 		return 0
 	}
@@ -141,6 +150,13 @@ func (s *OutgoingService) getTxnCount(ctx context.Context, network string, insCo
 			return 0
 		}
 		return n
+	case "UNIONPAY":
+		n, err := s.store.CountUnionPayWorkBetween(ctx, insCode, 3, *fromDate, *toDate)
+		if err != nil {
+			logOutsvc("CountUnionPayWorkBetween", err)
+			return 0
+		}
+		return n
 	}
 	return 0
 }
@@ -161,6 +177,8 @@ func (s *OutgoingService) scheduleFileProcessing(ctx context.Context, insCode, u
 			logOutsvc("scheduleFileProcessing", fmt.Errorf("network %s not yet ported", network))
 		case "MERCURY":
 			s.ProcessMercuryOutgoing(bg, insCode, user, formatCode, insShortName, fromDate, toDate)
+		case "UNIONPAY":
+			s.ProcessUnionPayOutgoing(bg, insCode, user, formatCode, insShortName, fromDate, toDate)
 		}
 	}()
 }

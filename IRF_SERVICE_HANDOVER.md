@@ -1075,6 +1075,33 @@ left at 9 are **logged as orphans** for ops review (the decrypted PAN is not
 persisted, so they cannot be auto-replayed). This matches Java, which has no
 crash recovery for a mid-`processOnlineTxn` failure either.
 
+### 7.13 UnionPay outgoing port (2026-08-16)
+
+Full UnionPay outgoing settlement-file support added to `go/outsvc`, mirroring
+the Mercury port and the UnionPay Part III File Interface manual (v25.2). See
+**`unionpayoutgoing.md`** (repo root) for the complete spec map (file naming,
+TC000/TC100/TC001 layouts, Block 0/1/2 field maps, flow, env config, tests).
+
+- `go/outsvc/unionpay.go` — `ProcessUnionPayOutgoing` + record builders
+  (`unionPayBlock0/1/2`, `unionPayTC000/TC001`, `unionPayFileName`
+  `OFCYYMMDD5?C`, `unionPayIsChipTxn` Block-2 gating on POS entry `05/07/95`).
+- `go/outsvc/unionpay_entity.go` — `UnionPayAcqTxnWorkEntity`/`UnionPayAcqTxnDataEntity`
+  (`UPT_*` columns).
+- `go/outsvc/unionpay_store.go` + `store.go` — 10 new `Store` methods
+  (count/find/update/delete work, insert data, complete POS status).
+- `go/outsvc/controller.go` / `mc.go` / `vo.go` — `UNIONPAY` network wiring +
+  routing; `cmd/outgoing-service/main.go` — `UNIONPAY_SYSTEM_CODE` +
+  `UNIONPAY_VERSION_TAG` env.
+- `go/outsvc/unionpayout_test.go` — `TestUnionPayFileBuilder` (magstripe 387-char
+  vs chip 681-char records, header/trailer, CRLF, work→data move, bin sequence),
+  `TestUnionPayFileName`, `TestUnionPayIsChipTxn`. `go build/vet/test ./outsvc/`
+  pass.
+
+⚠️ **Not deployed to UAT.** Schema is **assumed** (`UP_ACQ_TXN_WORK`/`DATA`,
+bin type `U`, `INTERFACES` category `UNIONPAY`) because the live Oracle on
+`192.168.29.79:1521` was unreachable from this machine at build time. Confirm
+the real DDL + reference rows before deploying.
+
 ## 8. TODO (next engineer)
 
 1. ✅ Done — JDK 17 + Maven installed and `irf-common` + `irf-service` build
@@ -1172,6 +1199,13 @@ crash recovery for a mid-`processOnlineTxn` failure either.
         `KAFKA_GROUP`/`KAFKA_TOPIC` (+ `ack_TOPIC`/`err_TOPIC`) — no ingestion
         path until configured. ⚠️ Post-restart orphans at gen_status=9 are
         WARN-logged (decrypted PAN not persisted — see §7.12 "Recovery reality").
+22. ✅ Done — UnionPay outgoing settlement-file port (`go/outsvc`) per the
+        UnionPay Part III File Interface manual — `OFCYYMMDD5?C` files with
+        TC000/TC100/TC001 and Block 0/1/2 (see **`unionpayoutgoing.md`**, §7.13).
+        ⚠️ **Not deployed:** schema (`UP_ACQ_TXN_WORK`/`DATA`, bin type `U`,
+        `INTERFACES` category `UNIONPAY`) is **assumed** — the live Oracle on
+        `192.168.29.79:1521` was unreachable at build time. Confirm DDL +
+        reference rows, then deploy with `UNIONPAY_SYSTEM_CODE` set.
 
 ## 9. Files created/modified (by this handover)
 
@@ -1261,7 +1295,25 @@ CRLF one-record-per-line layout, no trailing newline. `go/outsvc/jaywan_entity.g
 `FindJaywanNetworkDataByRef`. `go/outsvc/jaywanout_test.go` — byte-for-byte test
 vs `jaywan.xml` (fake store + frozen clock). `go/outsvc/mc.go` —
 `OutgoingService.now` clock field; `go/cmd/outgoing-service/main.go` — stale
-comment fixed. `go build/vet/test ./outsvc/` pass.
+  comment fixed. `go build/vet/test ./outsvc/` pass.
+
+**UnionPay outgoing (new, 2026-08-16, §7.13):** `unionpayoutgoing.md` (repo root
+— full spec map: naming `OFCYYMMDD5?C`, TC000/TC100/TC001 layouts, Block 0/1/2
+field maps, flow, env, tests, open items). `go/outsvc/unionpay.go` —
+`ProcessUnionPayOutgoing` (`find format` → `find interface` → file-log 1/9 guard →
+bin `U` → status-3 work → CryptAPI decrypt → per-chunk seq/name/`inserOutFileLog`/
+write/status-4/`updateOutFilelog`/summary → `CompleteUnionPayPosStatus` →
+work→data move), `unionPayBlock0/1/2` (`C000`/`E000` bitmap, Block 2 gated on
+chip POS entry `05/07/95`), `unionPayTC000/TC001`, `unionPayFileName`,
+`unionPayMinor12` (value×10^fd), `unionPayStan`, `unionPayPad`,
+`splitUnionPayTransactions` (≤50000/file). `go/outsvc/unionpay_entity.go` —
+`UnionPayAcqTxnWorkEntity`/`UnionPayAcqTxnDataEntity` (`UPT_*`). `go/outsvc/unionpay_store.go`
++ `store.go` — 10 new `Store` methods. `go/outsvc/controller.go`/`mc.go`/`vo.go`
+— `UNIONPAY` wiring; `go/cmd/outgoing-service/main.go` — `UNIONPAY_SYSTEM_CODE`/
+`UNIONPAY_VERSION_TAG` env. `go/outsvc/unionpayout_test.go` — 3 tests (builder
+asserts 387-char magstripe vs 681-char chip records, header/trailer, CRLF, data
+move, bin seq). `go build/vet/test ./outsvc/` pass. ⚠️ schema assumed — see
+§7.13.
 
 **Mastercard IRF gap assessment (new, 2026-08-15, §7.9):** `MC_IRF_GAP_ASSESSMENT.md`
 (repo root) — compares `UAE_Oman_Implementation_Guide.md` against

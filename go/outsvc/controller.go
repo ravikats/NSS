@@ -24,7 +24,7 @@ func (c *OutgoingController) GenerateOutgoing(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if !outgoingNetworks[vo.Network] {
-		writeMessage(w, http.StatusBadRequest, "network must match ^(MASTERCARD|VISA|RUPAY|AMEX|JAYWAN)$")
+		writeMessage(w, http.StatusBadRequest, "network must match ^(MASTERCARD|VISA|RUPAY|AMEX|JAYWAN|MERCURY|UNIONPAY)$")
 		return
 	}
 	formatCode := 0
@@ -39,6 +39,8 @@ func (c *OutgoingController) GenerateOutgoing(w http.ResponseWriter, r *http.Req
 		formatCode = c.svc.cfg.AmexSysCode
 	case "MERCURY":
 		formatCode = c.svc.cfg.MercurySysCode
+	case "UNIONPAY":
+		formatCode = c.svc.cfg.UnionPaySysCode
 	}
 	msg := c.svc.ProcessAndMoveData(r.Context(), &vo, c.svc.cfg.InsCode, c.svc.cfg.UpdatedUser, formatCode, c.svc.cfg.InsShortName)
 	writeMessage(w, http.StatusOK, msg)

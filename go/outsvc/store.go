@@ -95,6 +95,16 @@ type Store interface {
 	InsertMercuryData(ctx context.Context, ents []*MercuryAcqTxnDataEntity) error
 	CompleteMercuryPosStatus(ctx context.Context, ins int) error
 
+	CountUnionPayWorkBetween(ctx context.Context, ins, status int, from, to time.Time) (int, error)
+	CountUnionPayWorkLessThanEqual(ctx context.Context, ins, status int, to time.Time) (int, error)
+	FindUnionPayWorkBetween(ctx context.Context, ins, intCode, status int, from, to time.Time) ([]*UnionPayAcqTxnWorkEntity, error)
+	FindUnionPayWorkLessThanEqual(ctx context.Context, ins, intCode, status int, to time.Time) ([]*UnionPayAcqTxnWorkEntity, error)
+	FindUnionPayWorkByStatus(ctx context.Context, ins, status int) ([]*UnionPayAcqTxnWorkEntity, error)
+	UpdateUnionPayWorkStatuses(ctx context.Context, ents []*UnionPayAcqTxnWorkEntity) error
+	DeleteUnionPayWork(ctx context.Context, ents []*UnionPayAcqTxnWorkEntity) error
+	InsertUnionPayData(ctx context.Context, ents []*UnionPayAcqTxnDataEntity) error
+	CompleteUnionPayPosStatus(ctx context.Context, ins int) error
+
 	FindPosBySerNumbers(ctx context.Context, ser []int64) ([]*PosTransactionEntity, error)
 	UpdatePosStatuses(ctx context.Context, ents []*PosTransactionEntity) error
 

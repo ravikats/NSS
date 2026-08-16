@@ -24,4 +24,5 @@ var outgoingNetworks = map[string]bool{
 	"AMEX":       true,
 	"JAYWAN":     true,
 	"MERCURY":    true,
+	"UNIONPAY":   true,
 }
