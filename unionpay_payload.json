@@ -1,0 +1,127 @@
+{
+  "payload": {
+    "bank_id": "CPBA",
+    "scheme": "UNIONPAY",
+    "ref_id": "05ce8ca9-add2-4deb-8883-883d8933dfaa",
+    "switch_mti": "0110",
+    "pan": "62109xxxxxx00029",
+    "switch_crypt_token": "68bad116e7764c94ab82699ace2f0bb5",
+    "processing_code": "000000",
+    "amount": "000000010000",
+    "transmission_date": "0708102208",
+    "stan": "082320",
+    "local_time": "142208",
+    "local_date": "0708",
+    "exp_date": "3010",
+    "mcc": "5411",
+    "acquier_id": "24160784",
+    "pos_entry_mode": "051",
+    "pan_sequence_number": "001",
+    "txn_fee_amount": "",
+    "acq_inst_country_code": "784",
+    "settlement_amount": "000000010000",
+    "pos_condition_code": "00",
+    "rrn": "618910082320",
+    "auth_code": "001666",
+    "network_response_code": "00",
+    "service_restriction_code": "220",
+    "terminal_id": "T0000243",
+    "merchant_id": "M00000000000363",
+    "card_acceptor_name": "AliSaeed              ",
+    "card_acceptor_st_addr": "test address",
+    "card_acceptor_city": "dubai        ",
+    "card_acceptor_state_code": "AE",
+    "card_acceptor_country_code": "ARE",
+    "card_acceptor_pin_code": "000000",
+    "currency_code": "784",
+    "additional_amount": "",
+    "de48_json": {
+      "maid": "",
+      "setIndicator": "",
+      "pinServiceCode": "",
+      "meCountryCode": "784"
+      "funCode"
+    },
+    "de55_json": {
+      "82": "7C00",
+      "84": "A000000333010101",
+      "91": "",
+      "95": "0880048000",
+      "9F26": "37F55E45E836D4CF",
+      "9F27": "80",
+      "9F10": "07000103A0200001",
+      "9F37": "51B0B310",
+      "9F36": "000D",
+      "9A": "260708",
+      "9C": "00",
+      "9F02": "000000010000",
+      "5F2A": "0784",
+      "9F1A": "0784",
+      "9F03": "000000000000",
+      "9F34": "",
+      "9F33": "E0F0C8",
+      "9F35": "",
+      "9F1E": "",
+      "9F53": "",
+      "9F09": "",
+      "9F41": "",
+      "9F6E": ""
+    },
+    "de60_json": {
+      "terminalCapability": "",
+      "ecomIndicator": "",
+      "chIdMethod": ""
+      "txnInMethod: -> from 60.3.5
+    },
+    "de61_json": {
+      "cardInputAbility": "",
+      "cardCaptureCapability": "",
+      "operationalEnv1": "",
+      "operationalEnv3": "",
+      "chPresent": "",
+      "cardPresent": ""
+    },
+    "de62_json": {
+      "authCharecteresticId": "",
+      "txnId": "",
+      "validationCode": "",
+      "marketSpecAuthDataInd": "",
+      "mvv": "",
+      "productId": "",
+      "spendQualificationInd": ""
+    },
+    "de63_json": {
+      "networkData": "",
+      "reImbursementAttribute": "",
+      "feePgmIndicator": ""
+    },
+    "de111_json": {
+      "accountFundingSource": ""
+    },
+    "de126_json": {
+      "posEnv": ""
+    },
+    "channel": "POS",
+    "server_date_time": "20260708 14:22:08",
+    "settlement_indicator": "Y",
+    "settlement_date": "0422",
+    "settlement_code": "",
+    "onus_offus_indicator": "OFFUS",
+    "sms_dms_indicator": "DMS",
+    "merchant_category_type": "S",
+    "amex_merchant_id": "",
+    "merchant_contact_information": "",
+    "merchant_location_id": "",
+    "original_rrn": "",
+    "auth_amount": "",
+    "location_region_code": "",
+    "invoiceNumber": "",
+    "sub_route": "upi",
+    "dcc": {
+      "dcc_amount": "",
+      "dcc_currency": "",
+      "dcc_indicator": "",
+      "exchange_rate": ""
+    }
+  }
+}

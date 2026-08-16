@@ -1097,10 +1097,36 @@ TC000/TC100/TC001 layouts, Block 0/1/2 field maps, flow, env config, tests).
   `TestUnionPayFileName`, `TestUnionPayIsChipTxn`. `go build/vet/test ./outsvc/`
   pass.
 
-⚠️ **Not deployed to UAT.** Schema is **assumed** (`UP_ACQ_TXN_WORK`/`DATA`,
-bin type `U`, `INTERFACES` category `UNIONPAY`) because the live Oracle on
-`192.168.29.79:1521` was unreachable from this machine at build time. Confirm
-the real DDL + reference rows before deploying.
+**Schema now created on the reachable Oracle (2026-08-16):** the live Oracle on
+`192.168.29.79:1521/FREEPDB1` is now reachable from this machine (local DSN
+`oracle://NETWORK_SETTLEMENT_UAT:J6erQ%24o6E24@192.168.29.79:1521/FREEPDB1`).
+The UnionPay artefacts were missing there, so they were **created** (idempotent
+SQL in `replica/unionpay_staging_setup.sql`, applied to the DB): `UP_ACQ_TXN_WORK`
++ `UP_ACQ_TXN_DATA` (66 `UPT_*` columns, PK `UPT_SER_NUMBER`), `INTERFACES`
+`INT_CODE=22` category `UNIONPAY`, `FILE_FORMATS` `FOR_SYSTEM_CODE=132`/`FOR_CODE=124`
+type `O`, `ACQUIRER_BINS` `ACQ_BIN='970963'` type `U` ICA `970962`. The values
+are **fabricated** (modeled on Mercury) — the codebase's assumed schema matched
+the real DDL shapes; confirm real UAT values before deploy. Real column notes:
+`ACQUIRER_BINS` uses `ACQ_BIN_TYPE`/`ACQ_MC_ICA_NO`/`ACQ_OUT_FILE_SEQ`/
+`ACQ_OUT_FILE_DATE`/`ACQ_OUT_BATCH_NO`/`ACQ_PARTICIPANT_ID`; all tables have
+NOT NULL `*_LAST_UPDATED` (supply `SYSDATE`). go-ora quirk: `MERGE` and
+`INSERT ... SELECT ... WHERE NOT EXISTS` fail with ORA-03405 — use plain
+`INSERT ... VALUES` with an existence pre-check.
+
+⚠️ **Not deployed to UAT.** Testing the UnionPay outgoing port end-to-end needs
+the **TLF staging path** (`go/tlfsvc`), which does **not** exist yet — only
+Mercury staging (`StageMercury`) is wired. The test payload
+`unionpay_payload.json` (scheme `UNIONPAY`, sub_route `upi`, DMS, chip POS
+entry `051`) is present but **malformed** (missing commas at `de48_json.meCountryCode`
+and `de60_json.chIdMethod`, a valueless `"funCode"` key, and a stray
+`txnInMethod` note). Adding UnionPay staging = `NetworkMapping` `"upi"`→`UNIONPAY`,
+a `UNIONPAY` branch in `OutgoingStatusCheck`, `StageUnionPay` (entity + mapper +
+`InsertUnionPayWork` store method + `STAGE_UNIONPAY` env) wired into `Stage2`,
+plus a small probe harness to drive `Stage1`/`Stage2` against the DB (Kafka is
+not available locally). Note: the payload's `de55_json` uses raw EMV tag keys
+(`"82"`, `"9F26"`, …) per the Java `de55Vo` `@JsonProperty`s — the Go `De55Vo`
+currently expects camelCase tags (`nineF26`, …), so the tag mapping needs
+aligning for chip fields to populate the staged `UPT_APP_*` columns.
 
 ## 8. TODO (next engineer)
 
