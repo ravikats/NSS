@@ -15,18 +15,18 @@ import (
 // method.
 type mercuryFakeStore struct {
 	Store
-	work        []*MercuryAcqTxnWorkEntity
-	data        []*MercuryAcqTxnDataEntity
-	fileLogs    []*OutGoingFileProcessingEntity
-	nextSerial  int64
-	acqBin      *AcquirerBinsEntity
-	interfaces  *InterfacesEntity
-	format      *FileFormatsEntity
-	summaries   []*OutgoingSummaryEntity
-	posDone     bool
-	statusUpd   map[int64]int
-	fileIDUpd   map[int64]string
-	userUpd     map[int64]int
+	work       []*MercuryAcqTxnWorkEntity
+	data       []*MercuryAcqTxnDataEntity
+	fileLogs   []*OutGoingFileProcessingEntity
+	nextSerial int64
+	acqBin     *AcquirerBinsEntity
+	interfaces *InterfacesEntity
+	format     *FileFormatsEntity
+	summaries  []*OutgoingSummaryEntity
+	posDone    bool
+	statusUpd  map[int64]int
+	fileIDUpd  map[int64]string
+	userUpd    map[int64]int
 }
 
 func (f *mercuryFakeStore) FindFileFormatBySystemCodeAndType(ctx context.Context, sysCode int, typ string) (*FileFormatsEntity, error) {
@@ -162,29 +162,29 @@ func mercuryWorkEntity() *MercuryAcqTxnWorkEntity {
 	ldt := time.Date(2026, 8, 3, 16, 4, 59, 0, time.UTC)
 	td := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)
 	return &MercuryAcqTxnWorkEntity{
-		SerialNumber:          1,
-		InstitutionCode:       1,
-		IntCode:               21,
-		PrjSerNumber:          1,
-		GenStatus:             3,
-		MerchantId:            "M00000000000009",
-		TerminalId:            "T0000005",
-		TxnType:               "1240",
-		TxnAmount:             10.00,
-		LocalDateTime:         &ldt,
-		TxnDate:               &td,
-		ChargeType:            "AA",
-		MeName:                "ALI MANZ STORE",
-		MeCity:                "dubai",
-		MeCountry:             "AE",
+		SerialNumber:           1,
+		InstitutionCode:        1,
+		IntCode:                21,
+		PrjSerNumber:           1,
+		GenStatus:              3,
+		MerchantId:             "M00000000000009",
+		TerminalId:             "T0000005",
+		TxnType:                "1240",
+		TxnAmount:              10.00,
+		LocalDateTime:          &ldt,
+		TxnDate:                &td,
+		ChargeType:             "AA",
+		MeName:                 "ALI MANZ STORE",
+		MeCity:                 "dubai",
+		MeCountry:              "AE",
 		CardAccepStreetAddress: "STREET 1",
-		EstPhoneNumber:        "0501234567",
-		Mcc:                   "9211",
-		ApprovalCode:          "232068",
-		Rrn:                   "621516000001",
-		ResponseCode:          "00",
-		PosEntryMode:          "071",
-		EncryptedCardNumber:   "tok1",
+		EstPhoneNumber:         "0501234567",
+		Mcc:                    "9211",
+		ApprovalCode:           "232068",
+		Rrn:                    "621516000001",
+		ResponseCode:           "00",
+		PosEntryMode:           "071",
+		EncryptedCardNumber:    "tok1",
 	}
 }
 
@@ -221,11 +221,11 @@ func TestMercuryFileBuilderMatchesJava(t *testing.T) {
 	st.work = []*MercuryAcqTxnWorkEntity{t1, t2, t3}
 
 	s := NewOutgoingService(OutgoingConfig{
-		InsCode:            1,
-		InsShortName:       "IRF",
-		UpdatedUser:        4,
-		ReconOutDir:        dir,
-		CurrencyCodeKafka:  "AED000",
+		InsCode:           1,
+		InsShortName:      "IRF",
+		UpdatedUser:       4,
+		ReconOutDir:       dir,
+		CurrencyCodeKafka: "AED000",
 	}, st, &fakeCrypto{dec: map[string]string{"tok1": "6690109700100010"}})
 	frozen := time.Date(2026, 8, 3, 13, 37, 57, 0, time.UTC)
 	s.now = func() time.Time { return frozen }
@@ -251,7 +251,8 @@ func TestMercuryFileBuilderMatchesJava(t *testing.T) {
 		t.Errorf("batch header line = %q", lines[1])
 	}
 
-	// t1 (debit AA): XD with decrypted PAN and formatted amount 10.00*100=1000.
+	// t1 (debit AA): XD with decrypted PAN and amount as a plain decimal
+	// (10.00 -> "10.00"), per the scheme sample's CAMTR format.
 	xd1 := lines[2]
 	if !strings.HasPrefix(xd1, "FRRC>XD>RK>970962>MP>001>001>") {
 		t.Fatalf("XD1 = %q", xd1)
@@ -260,11 +261,20 @@ func TestMercuryFileBuilderMatchesJava(t *testing.T) {
 	if xd1Fields[7] != "6690109700100010" {
 		t.Errorf("XD1 PAN = %q", xd1Fields[7])
 	}
-	if xd1Fields[8] != "1000" {
-		t.Errorf("XD1 amount = %q, want 1000", xd1Fields[8])
+	if xd1Fields[8] != "10.00" {
+		t.Errorf("XD1 amount = %q, want 10.00 (decimal)", xd1Fields[8])
 	}
 	if xd1Fields[9] != "260803" {
 		t.Errorf("XD1 date = %q, want 260803 (yyMMdd)", xd1Fields[9])
+	}
+	// No surcharge -> field 45 SURFEE is empty (sample omits zero surcharges).
+	if xd1Fields[45] != "" {
+		t.Errorf("XD1 surcharge = %q, want empty", xd1Fields[45])
+	}
+	// AURCDE (field 54) must stay empty; the response code has no home in the
+	// XD record (the scheme sample leaves it blank).
+	if xd1Fields[54] != "" {
+		t.Errorf("XD1 field 54 (AURCDE) = %q, want empty", xd1Fields[54])
 	}
 
 	// t2 (credit TF with surcharge): XD + XM (pos entry 051).
@@ -273,11 +283,11 @@ func TestMercuryFileBuilderMatchesJava(t *testing.T) {
 		t.Fatalf("XD2 = %q", xd2)
 	}
 	xd2Fields := strings.Split(xd2, ">")
-	if xd2Fields[8] != "95100" {
-		t.Errorf("XD2 amount = %q, want 95100", xd2Fields[8])
+	if xd2Fields[8] != "951.00" {
+		t.Errorf("XD2 amount = %q, want 951.00", xd2Fields[8])
 	}
-	if xd2Fields[45] != "100" {
-		t.Errorf("XD2 surcharge = %q, want 100 (field 45)", xd2Fields[45])
+	if xd2Fields[45] != "1.00" {
+		t.Errorf("XD2 surcharge = %q, want 1.00 (field 45)", xd2Fields[45])
 	}
 	// XM record follows XD2 (index 4).
 	if !strings.HasPrefix(lines[4], "FRRC>XM>RK>970962>MP>001>002>") {
@@ -304,13 +314,13 @@ func TestMercuryFileBuilderMatchesJava(t *testing.T) {
 
 	// Trailer: UT (1 credit 951.00, 2 debits 10.00+100.00) then UY with
 	// net = credit - debit. Surcharges are excluded from these totals (the
-	// Java builder only sums txnAmount).
+	// Java builder only sums txnAmount). Amounts are plain decimals.
 	ut := lines[8]
-	if ut != "FRRC>UT>RK>970962>MP>001>1>95100>2>11000" {
+	if ut != "FRRC>UT>RK>970962>MP>001>1>951.00>2>110.00" {
 		t.Errorf("UT = %q", ut)
 	}
 	uy := lines[9]
-	if uy != "FRRC>UY>RK>970962>MP>1>95100>2>11000>01.000>84100>>>>>>" {
+	if uy != "FRRC>UY>RK>970962>MP>1>951.00>2>110.00>01.000>841.00>>>>>>" {
 		t.Errorf("UY = %q", uy)
 	}
 
@@ -404,8 +414,9 @@ func TestMercuryBatchFlipAt60(t *testing.T) {
 	if len(ut) != 2 {
 		t.Fatalf("batch trailers = %d, want 2", len(ut))
 	}
-	// Second UT should report the single batch-2 txn (61.00 * 100 = 6100).
-	if ut[1] != "FRRC>UT>RK>970962>MP>002>0>0>1>6100" {
+	// Second UT should report the single batch-2 txn (61.00 as a decimal); the
+	// zero credit amount renders ".00" per the scheme sample.
+	if ut[1] != "FRRC>UT>RK>970962>MP>002>0>.00>1>61.00" {
 		t.Errorf("second UT = %q", ut[1])
 	}
 	_ = work
@@ -439,7 +450,9 @@ func TestMercuryDecryptFailure(t *testing.T) {
 }
 
 // TestMercuryHelpers exercises the numeric formatting helpers used by the EIF
-// builder for the AED (2 fraction digits) multiplier of 100.
+// builder for the AED (2 fraction digits) multiplier of 100. Amounts follow the
+// scheme sample: CAMTR/UT/UY as decimals, XM CAMTA/CAMTO as 12-digit minor
+// units (value*100).
 func TestMercuryHelpers(t *testing.T) {
 	mult := big.NewRat(100, 1)
 	cases := []struct {
@@ -447,11 +460,14 @@ func TestMercuryHelpers(t *testing.T) {
 		got  string
 		want string
 	}{
-		{"amount 10", mercuryFormatAmount(10.00, mult), "1000"},
-		{"amount 951", mercuryFormatAmount(951.00, mult), "95100"},
-		{"amount half-up", mercuryFormatAmount(10.005, mult), "1001"},
-		{"amount12 10", mercuryAmount12(10.00, mult), "000010000000"},
-		{"amount12 1.5", mercuryAmount12(1.50, mult), "000001500000"},
+		{"amount 10", mercuryFormatAmount(10.00, mult), "10.00"},
+		{"amount 951", mercuryFormatAmount(951.00, mult), "951.00"},
+		{"amount zero", mercuryFormatAmount(0, mult), ".00"},
+		{"amount half-up", mercuryFormatAmount(10.005, mult), "10.01"},
+		{"amount12 10", mercuryAmount12(10.00, mult), "000000001000"},
+		{"amount12 1.5", mercuryAmount12(1.50, mult), "000000000150"},
+		{"amount12 14.5", mercuryAmount12(14.50, mult), "000000001450"},
+		{"amount12 2000", mercuryAmount12(2000.00, mult), "000000200000"},
 		{"textLen short", mercuryTextLen("AB", 6), "AB    "},
 		{"textLen long", mercuryTextLen("ABCDEFGH", 4), "ABCD"},
 		{"textLen empty", mercuryTextLen("", 3), "   "},
@@ -461,7 +477,7 @@ func TestMercuryHelpers(t *testing.T) {
 		{"trimTo empty", mercuryTrimTo("", 6), ""},
 		{"date", mercuryDate(timePtr(2026, 8, 3, 16, 4, 59)), "260803"},
 		{"localTime", mercuryLocalTime(timePtr(2026, 8, 3, 16, 4, 59)), "160459"},
-		{"neg half-up", mercuryFormatAmount(-2.5, mult), "-250"},
+		{"neg half-up", mercuryFormatAmount(-2.5, mult), "-2.50"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {

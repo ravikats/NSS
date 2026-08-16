@@ -305,7 +305,7 @@ func (s *OutgoingService) writeMercuryFile(ctx context.Context, txnList []*Mercu
 
 	for _, txn := range txnList {
 		if batchTxnCount == mercuryMaxBatchRecord {
-			lines = append(lines, mercuryUT(recapNumber, mercuryFormat3(batchNo), batchCreditCount, batchCreditAmount, batchDebitCount, batchDebitAmount))
+			lines = append(lines, mercuryUT(recapNumber, mercuryFormat3(batchNo), batchCreditCount, batchCreditAmount, batchDebitCount, batchDebitAmount, fd))
 			batchNo++
 			seqNo = 1
 			batchTxnCount = 0
@@ -327,7 +327,7 @@ func (s *OutgoingService) writeMercuryFile(ctx context.Context, txnList []*Mercu
 		if mercuryIsMCRequired(txn, mult) {
 			lines = append(lines, mercuryMC(txn, recapNumber, batchNumber, sequenceNumber, mult))
 		}
-		txnAmount := mercuryAmount(txn.TxnAmount, mult)
+		txnAmount := new(big.Rat).Abs(decimalRat(txn.TxnAmount))
 		batchTxnCount++
 		seqNo++
 		if mercuryIsCreditTxn(txn) {
@@ -342,8 +342,8 @@ func (s *OutgoingService) writeMercuryFile(ctx context.Context, txnList []*Mercu
 		recapDebitCount++
 		recapDebitAmount = new(big.Rat).Add(recapDebitAmount, txnAmount)
 	}
-	lines = append(lines, mercuryUT(recapNumber, mercuryFormat3(batchNo), batchCreditCount, batchCreditAmount, batchDebitCount, batchDebitAmount))
-	lines = append(lines, mercuryUY(recapNumber, recapCreditCount, recapCreditAmount, recapDebitCount, recapDebitAmount))
+	lines = append(lines, mercuryUT(recapNumber, mercuryFormat3(batchNo), batchCreditCount, batchCreditAmount, batchDebitCount, batchDebitAmount, fd))
+	lines = append(lines, mercuryUY(recapNumber, recapCreditCount, recapCreditAmount, recapDebitCount, recapDebitAmount, fd))
 
 	return s.writeMercuryLinesToFile(lines, insShortName, fileName)
 }
@@ -377,21 +377,21 @@ func mercuryUH(recapNumber, batchNo, recapDate string) string {
 	return strings.Join([]string{mercuryTRANS, "UH", mercurySFTER, recapNumber, mercuryDFTER, batchNo, recapDate}, ">")
 }
 
-func mercuryUT(recapNumber, batchNo string, creditCount int, creditAmount *big.Rat, debitCount int, debitAmount *big.Rat) string {
+func mercuryUT(recapNumber, batchNo string, creditCount int, creditAmount *big.Rat, debitCount int, debitAmount *big.Rat, fd int) string {
 	return strings.Join([]string{
 		mercuryTRANS, "UT", mercurySFTER, recapNumber, mercuryDFTER, batchNo,
-		fmt.Sprintf("%01d", creditCount), mercuryRatAmount(creditAmount),
-		fmt.Sprintf("%01d", debitCount), mercuryRatAmount(debitAmount),
+		fmt.Sprintf("%01d", creditCount), mercuryRatAmount(creditAmount, fd),
+		fmt.Sprintf("%01d", debitCount), mercuryRatAmount(debitAmount, fd),
 	}, ">")
 }
 
-func mercuryUY(recapNumber string, creditCount int, creditAmount *big.Rat, debitCount int, debitAmount *big.Rat) string {
+func mercuryUY(recapNumber string, creditCount int, creditAmount *big.Rat, debitCount int, debitAmount *big.Rat, fd int) string {
 	netAmount := new(big.Rat).Sub(creditAmount, debitAmount)
 	return strings.Join([]string{
 		mercuryTRANS, "UY", mercurySFTER, recapNumber, mercuryDFTER,
-		fmt.Sprintf("%01d", creditCount), mercuryRatAmount(creditAmount),
-		fmt.Sprintf("%01d", debitCount), mercuryRatAmount(debitAmount),
-		"01.000", mercuryRatAmount(netAmount),
+		fmt.Sprintf("%01d", creditCount), mercuryRatAmount(creditAmount, fd),
+		fmt.Sprintf("%01d", debitCount), mercuryRatAmount(debitAmount, fd),
+		"01.000", mercuryRatAmount(netAmount, fd),
 		"", "", "", "", "", "",
 	}, ">")
 }
@@ -409,9 +409,9 @@ func mercuryXD(txn *MercuryAcqTxnWorkEntity, recapNumber, batchNo, seqNo string,
 		mercuryText(txn.Mcc), "", "", "", mercuryText(txn.Rrn), mercuryText(txn.TerminalId),
 		"", "", "", "", mercuryText(txn.ChPresent), mercuryText(txn.CardPresent),
 		mercuryText(txn.CardInputMode), "", "", mercuryTextLen(txn.MercuryRefId, 15),
-		mercuryText(txn.CardInputCapability), mercuryFormatAmount(txn.SurchargeAmount, mult),
+		mercuryText(txn.CardInputCapability), mercurySurchargeAmount(txn.SurchargeAmount, mult),
 		"", mercuryText(txn.GeoArea), "", "", "", "", "", "",
-		mercuryText(txn.ResponseCode), "", "", "", "", "", "", "", "", "",
+		"", "", "", "", "", "", "", "", "", "",
 	}, ">")
 }
 
@@ -445,7 +445,7 @@ func mercuryXC(txn *MercuryAcqTxnWorkEntity, recapNumber, batchNo, seqNo string)
 func mercuryMC(txn *MercuryAcqTxnWorkEntity, recapNumber, batchNo, seqNo string, mult *big.Rat) string {
 	return strings.Join([]string{
 		mercuryTRANS, "MC", mercurySFTER, recapNumber, mercuryDFTER, batchNo, seqNo, "001",
-		mercuryAmount12(txn.CashBackAmount, mult),
+		mercuryFormatAmount(txn.CashBackAmount, mult),
 	}, ">")
 }
 
@@ -495,34 +495,74 @@ func mercuryAmount(v float64, mult *big.Rat) *big.Rat {
 	return new(big.Rat).Mul(rat, mult)
 }
 
-// mercuryFormatAmount mirrors formatAmount(Double): value*multiplier rounded
-// half-up to an integer plain string (NOT abs; null -> "0").
+// mercuryFormatAmount renders the raw monetary amount as a plain decimal with
+// the currency's fraction digits (e.g. "2000.00" for AED), matching the scheme
+// sample (EIFSAMPLE.EIF). No scaling is applied to the value.
 func mercuryFormatAmount(v float64, mult *big.Rat) string {
-	rat := decimalRat(v)
-	scaled := new(big.Rat).Mul(rat, mult)
-	return mercuryRatHalfUp(scaled)
+	return mercuryDecimalRat(decimalRat(v), mercuryFracDigits(mult))
 }
 
-// mercuryAmount12 mirrors amount12(Double): amount(value).movePointRight(2)
-// .multiply(multiplier) rounded half-up, zero-padded to 12 digits.
+// mercuryAmount12 formats value*multiplier (minor units, e.g. 14.50 AED ->
+// 1450) rounded half-up and zero-padded to 12 digits, matching the scheme
+// sample's XM CAMTA/CAMTO (the Java double-multiply was dropped).
 func mercuryAmount12(v float64, mult *big.Rat) string {
 	amt := mercuryAmount(v, mult)
-	scaled := new(big.Rat).Mul(amt, big.NewRat(100, 1))
-	scaled = new(big.Rat).Mul(scaled, mult)
-	n := mercuryRatHalfUpInt(scaled)
+	n := mercuryRatHalfUpInt(amt)
 	return fmt.Sprintf("%012d", n)
 }
 
-// mercuryRatAmount mirrors amount(BigDecimal): abs, scale 0 half-up, plain.
-func mercuryRatAmount(r *big.Rat) string {
-	a := new(big.Rat).Abs(r)
-	return mercuryRatHalfUp(a)
+// mercuryRatAmount formats an amount Rat as a plain decimal with the currency's
+// fraction digits, e.g. ".00" and "35912.75" per the scheme sample.
+func mercuryRatAmount(r *big.Rat, fd int) string {
+	return mercuryDecimalRat(r, fd)
 }
 
-// mercuryRatHalfUp rounds a Rat to the nearest integer (half up, away from
-// zero) as a plain decimal string.
-func mercuryRatHalfUp(r *big.Rat) string {
-	return strconv.FormatInt(mercuryRatHalfUpInt(r), 10)
+// mercuryFracDigits returns the fraction digits implied by the currency
+// multiplier (mult = 10^fd), e.g. 100 -> 2.
+func mercuryFracDigits(mult *big.Rat) int {
+	if !mult.IsInt() {
+		return 0
+	}
+	s := mult.Num().String()
+	if len(s) == 0 || s[0] != '1' {
+		return 0
+	}
+	return len(s) - 1
+}
+
+// mercuryDecimalRat renders a Rat as a decimal with exactly fd fraction digits,
+// integer part without leading zeros (empty for zero), half-up rounding.
+func mercuryDecimalRat(r *big.Rat, fd int) string {
+	scaled := new(big.Rat).Mul(r, new(big.Rat).SetInt64(pow10int(fd)))
+	n := mercuryRatHalfUpInt(scaled)
+	sign := ""
+	if n < 0 {
+		sign = "-"
+		n = -n
+	}
+	div := pow10int(fd)
+	intPart := n / div
+	fracPart := n % div
+	intStr := ""
+	if intPart != 0 {
+		intStr = strconv.FormatInt(intPart, 10)
+	}
+	if fd == 0 {
+		if sign == "" && intStr == "" {
+			return "0"
+		}
+		return sign + intStr
+	}
+	return sign + intStr + "." + fmt.Sprintf("%0*d", fd, fracPart)
+}
+
+// mercurySurchargeAmount renders the surcharge fee as a decimal; empty when the
+// fee is zero (the scheme sample omits zero surcharges).
+func mercurySurchargeAmount(v float64, mult *big.Rat) string {
+	if v == 0 {
+		return ""
+	}
+	return mercuryFormatAmount(v, mult)
 }
 
 // mercuryRatHalfUpInt rounds a Rat to the nearest integer, half up (rounds
