@@ -1,15 +1,74 @@
 # AGENTS.md
 
 ## Go module layout
-The Go code lives under `go/` (module `empay/irf`, go.mod at `go/go.mod`). Go 1.24.6
-is installed at `/tmp/opencode/go/bin/go`; no system Go is required.
+The Go code lives under `go/` (module `empay/irf`, go.mod at `go/go.mod`).
+The system Go (`/usr/bin/go`) is go1.18 and cannot build this module. Use the
+downloaded toolchain from the module cache instead:
 
-## Build / verify commands (run from `go/`)
+```
+export GOTOOLCHAIN=go1.25.13
+export PATH=/home/ravi/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.13.linux-amd64/bin:$PATH
+```
+
+## Build / verify commands (run from `go/`, with the toolchain env above)
 - `go build ./...`
 - `go vet ./...`
 - `go test ./...`              # all packages, including tlfsvc (fake-store IRF flow tests)
+  # mpgsdcf/TestLoadJaywanRanges needs the fixture /tmp/opencode/jaywan_ranges.csv:
+  # fetch from UAT server `scp ec2-user@10.100.139.30:/home/ec2-user/jaywan_ranges.csv
+  # /tmp/opencode/` (the /vp-switch/Network_Settlement copy has a 7th range — leave it).
 - `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o tlf-service ./cmd/tlf-service`
   (static binary for UAT deploy)
+- `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/opencode/outgoing-service ./cmd/outgoing-service`
+
+## Local Oracle replica (for DB-backed tests / regenerating outgoing)
+- Docker container `oracle-local` (`gvenzl/oracle-free`, 23ai). Start with
+  `docker start oracle-local`; port 1521 → FREEPDB1.
+- Local DSN: `oracle://NETWORK_SETTLEMENT_UAT:J6erQ%24o6E24@localhost:1521/FREEPDB1`
+  (URL-encode `$` as `%24`). sqlplus works too:
+  `sqlplus NETWORK_SETTLEMENT_UAT/'J6erQ$o6E24'@localhost:1521/FREEPDB1`.
+- UAT DSN (not reachable from this machine; VPN/network): 
+  `oracle://NETWORK_SETTLEMENT_UAT:J6erQ$o6E24@switch-uat.c3guuusy8mm5.me-central-1.rds.amazonaws.com:1521/ORCL`
+- Transaction tables (`*_ACQ_TXN_WORK/DATA`, `POS_TRANSACTIONS`, `OUT_FILE_LOG`,
+  `OUTGOING_SUMMARY`) are empty on the replica — test data must be injected.
+  Mercury reference rows: `INTERFACES` INT_CODE=21 (category MERCURY),
+  `FILE_FORMATS` FOR_CODE=123 (system 134, type 'O'), `ACQUIRER_BINS`
+  ACQ_BIN='970962' type 'E' ICA '034540'. See `replica/README.md` +
+  `replica/mercury_staging_setup.sql`.
+- The CryptAPI server (`10.100.139.30:2728`) is reachable from this machine
+  (needed for PAN decryption during EIF generation). When starting the service,
+  pass the `decUrl`/`bankId`/`accessToken`/`crypt*` envs from
+  `outgoing/application.properties`. If it appears unreachable, ask the user to
+  connect the VPN first — do not assume it is down.
+
+## Regenerating the Mercury EIF outgoing file on the replica
+1. `docker start oracle-local` and wait for the DB to be ready.
+2. Move `MERCURY_ACQ_TXN_DATA` rows back to `MERCURY_ACQ_TXN_WORK` with
+   `MAT_GEN_STATUS=3` (SQL insert-from-data + delete), or use the service's
+   revert endpoint (only MASTERCARD/VISA/JAYWAN revert is ported; Mercury has none).
+ 3. Run the service (from `go/`; **leave it running** — do not kill it after a
+    generation, later runs reuse it):
+    ```
+    ORACLE_DSN='oracle://NETWORK_SETTLEMENT_UAT:J6erQ%24o6E24@localhost:1521/FREEPDB1' \
+    HTTP_PORT=19031 INS_CODE=1 INS_SHORT_NAME=IRF UPDATED_USER=4 \
+    MASTERCARD_SYSTEM_CODE=115 VISA_SYSTEM_CODE=117 JAYWAN_SYSTEM_CODE=120 \
+    AMEX_SYSTEM_CODE=121 MERCURY_SYSTEM_CODE=134 \
+    CURRENCY_CODE_KAFKA=AED000 RECON_OUT_IRF=/vp-switch/OUTPUT/ PROCESSING_MODE=T \
+    /tmp/opencode/outgoing-service
+    ```
+4. Trigger generation:
+   `curl -s -X POST http://localhost:19031/outgoing/v1/generateOutgoing -H 'Content-Type: application/json' \
+   -d '{"network":"MERCURY","fromDate":"01/08/2026 00:00:00","toDate":"31/08/2026 23:59:59"}'`
+5. Output: `EIF_ddMMyyyy.{seq:03d}` in `RECON_OUT_IRF` (sequence comes from
+   `ACQ_OUT_FILE_SEQ`/`ACQ_OUT_FILE_DATE` on the bin row; resets to 1 if the date
+   differs from today).
+6. Rows end in `MERCURY_ACQ_TXN_DATA` with `MAT_GEN_STATUS=4`; POS rows get
+   `PTR_GEN_STATUS=6`/`Completed`; `OUT_FILE_LOG` rows get status 4.
+
+Known Mercury EIF format notes (2026-08-16): amounts in XD/UT/UY are plain
+decimals with the currency's fraction digits (`10.00`, not `1000`); XM
+CAMTA/CAMTO are 12-digit minor units (value×100); zero surcharges are omitted
+from XD field 45; AURCDE (XD field 54) stays empty.
 
 ## New TLF service packages
 - `go/tlfsvc` — online TLF processor (payload.go, mapper.go, store.go, service.go,

@@ -509,7 +509,9 @@ identifies Jaywan by **card range** — the PAN (numeric) must fall inside one o
 the `[start,end]` ranges loaded from a CSV at service startup:
 
 ```
-/vp-switch/Network_Settlement/jaywan_ranges.csv   (6 ranges today)
+/vp-switch/Network_Settlement/jaywan_ranges.csv   (6 ranges today; the
+/vp-switch copy now has a 7th range — 6690109900000000,6690109999999999 — leave
+it as-is, it is not used by the tests)
 9784500300000000,9784500399999999
 6690090000000000,6690090099999999
 6690090100000000,6690090199999999
@@ -517,6 +519,13 @@ the `[start,end]` ranges loaded from a CSV at service startup:
 6690095000000000,6690095099999999
 6690090300000000,6690090399999999
 ```
+
+> ⚠️ **Access:** only **Engineer 1** can access the Jaywan ranges file
+> (`/home/ec2-user/jaywan_ranges.csv` on `10.100.139.30`, 6 ranges). Engineer 2
+> does **not** need to care about it — the local test fixture
+> (`/tmp/opencode/jaywan_ranges.csv`, same 6 ranges) is what
+> `mpgsdcf/TestLoadJaywanRanges` reads, and the deployed service reads its own
+> `/vp-switch/Network_Settlement/jaywan_ranges.csv`.
 
 - **Loading:** `mpgsdcf.LoadJaywanRanges(path)` parses the CSV (skips malformed
   lines with warnings; errors if no ranges parse). Wired in
@@ -941,7 +950,9 @@ configured (see §8 item 20).
 `go test ./cryptapi/ ./tlfsvc/ ./tlf/ ./mpgs/ ./mpgssvc/ ./live/ ./irf/ ./outsvc/`
 all pass; the only full-suite failure remains the pre-existing environmental
 `mpgsdcf/TestLoadJaywanRanges` (missing `/tmp/opencode/jaywan_ranges.csv` on
-Windows).
+Windows). The fixture is fetched from Engineer 1's server copy
+(`scp ec2-user@10.100.139.30:/home/ec2-user/jaywan_ranges.csv
+/tmp/opencode/`); Engineer 2 does not need to care about the ranges.
 
 > ⚠️ UAT `tlf-service.env` does **not** set `decUrl`, so the deployed service
 > still runs in masked-pan mode. To enable real decryption: add the CryptAPI
@@ -1378,3 +1389,49 @@ curl -s -X POST http://localhost:19031/tlf/v1/PostmanTxn \
 #   FROM NETWORK_SETTLEMENT_UAT.MERCURY_ACQ_TXN_WORK;
 #   -> 200 / POI / C / 29709626226210078883756 / 071
 ```
+
+### Mercury scheme gate + staging a 26-txn payload (local replica, 2026-08-16)
+
+**Finding — Mercury outgoing gate is scheme-exact-match.** `OutgoingStatusCheck`
+(`go/tlfsvc/mapper.go`) for a MERCURY network accepts a scheme only if it exactly
+equals `DISCOVER`, `DINERS`, `MERCURY`, or `RUPAY` (via `matchAny`, which is
+case-insensitive but **not** prefix/substring). A payload carrying
+`scheme="DINERS CLUB INTERNATIONAL"` therefore **fails** the gate
+(`SchemeMapping` only upper-cases it, it never becomes `"DINERS"`), so those
+txns are never staged to `MERCURY_ACQ_TXN_WORK`. The same value is also rejected
+earlier by the Kafka `validate` scheme `@Length(max=20)` check
+(`go/tlfsvc/kafka.go`) — `"DINERS CLUB INTERNATIONAL"` is 25 chars. To stage
+those txns the payload must say `"DINERS"`.
+
+Verified against the real payload pulled from the box
+(`/tmp/opencode/payload.json`, 26 txns, all `sub_route:"mercury"`, MTI 0110,
+proc `000000`, `network_response_code:00`, DMS): after fixing
+`DINERS CLUB INTERNATIONAL → DINERS`, **all 26** pass
+`NetworkMapping + OutgoingStatusCheck` and get staged to `MERCURY_ACQ_TXN_WORK`
+(via `Stage1`+`Stage2` with `STAGE_MERCURY=1`).
+
+**Running the irf-service jar locally (needed so Stage2 hits a real
+`/irf/v1/calculate` instead of a dead endpoint):**
+- The jar is on **`10.100.139.30`** (`.232` has only `splitProcessAndStaging`
+  + the other `/Netset` jars; no irf-service there):
+  `scp -i ~/switch-uat-key-pair.pem ec2-user@10.100.139.30:/App/Vaultspay/irf-service/irf-service-1.0.0-SNAPSHOT.jar /tmp/opencode/`
+- Run against the **local replica** (UAT RDS is unreachable from this machine):
+  ```
+  cd /tmp/opencode
+  SERVER_PORT=8085 IRF_SERVICE_SEC=UAT-IRF-7f3a9c2b \
+  SPRING_DATASOURCE_URL='jdbc:oracle:thin:@//localhost:1521/FREEPDB1' \
+  SPRING_DATASOURCE_USERNAME=NETWORK_SETTLEMENT_UAT SPRING_DATASOURCE_PASSWORD='J6erQ$o6E24' \
+  SPRING_JPA_HIBERNATE_DDL_AUTO=none \
+  nohup java -Xms256m -Xmx1g -jar irf-service-1.0.0-SNAPSHOT.jar > /tmp/opencode/irf-service_logs/console.log 2>&1 &
+  ```
+  Health: `POST /irf/v1/calculate` → 401 without `?sec=`, 200 with
+  `?sec=UAT-IRF-7f3a9c2b`. MERCURY has **no** IRF calculator in the jar, so a
+  Mercury `calculate` returns `{"calculated":false,"result":null}` — non-fatal
+  in Stage2 (IRF columns just get the cleared shape; staging still happens).
+  The jar needs JDK 17 (system `/usr/bin/java` is 17.0.19).
+- Re-run result: 26/26 txns staged, `MERCURY_ACQ_TXN_WORK` rows = 26 (RRNs
+  `622607652332`–`622611102183`), zero `irf calculate failed` warnings.
+
+> ⚠️ Only **Engineer 1** can access the `.30`/`.232` boxes; Engineer 2 does not
+> need to care — the staging driver + local irf-service run is reproducible from
+> `/tmp/opencode` on Engineer 1's machine.
