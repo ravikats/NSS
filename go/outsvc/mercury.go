@@ -386,7 +386,7 @@ func mercuryUT(recapNumber, batchNo string, creditCount int, creditAmount *big.R
 }
 
 func mercuryUY(recapNumber string, creditCount int, creditAmount *big.Rat, debitCount int, debitAmount *big.Rat) string {
-	netAmount := new(big.Rat).Sub(creditAmount, debitAmount)
+	netAmount := new(big.Rat).Abs(new(big.Rat).Sub(creditAmount, debitAmount))
 	return strings.Join([]string{
 		mercuryTRANS, "UY", mercurySFTER, recapNumber, mercuryDFTER,
 		fmt.Sprintf("%01d", creditCount), mercuryMinorUnits(creditAmount),
