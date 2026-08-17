@@ -305,7 +305,7 @@ func (s *OutgoingService) writeMercuryFile(ctx context.Context, txnList []*Mercu
 
 	for _, txn := range txnList {
 		if batchTxnCount == mercuryMaxBatchRecord {
-			lines = append(lines, mercuryUT(recapNumber, mercuryFormat3(batchNo), batchCreditCount, batchCreditAmount, batchDebitCount, batchDebitAmount, fd))
+			lines = append(lines, mercuryUT(recapNumber, mercuryFormat3(batchNo), batchCreditCount, batchCreditAmount, batchDebitCount, batchDebitAmount))
 			batchNo++
 			seqNo = 1
 			batchTxnCount = 0
@@ -327,7 +327,7 @@ func (s *OutgoingService) writeMercuryFile(ctx context.Context, txnList []*Mercu
 		if mercuryIsMCRequired(txn, mult) {
 			lines = append(lines, mercuryMC(txn, recapNumber, batchNumber, sequenceNumber, mult))
 		}
-		txnAmount := new(big.Rat).Abs(decimalRat(txn.TxnAmount))
+		txnAmount := mercuryAmount(txn.TxnAmount, mult)
 		batchTxnCount++
 		seqNo++
 		if mercuryIsCreditTxn(txn) {
@@ -342,8 +342,8 @@ func (s *OutgoingService) writeMercuryFile(ctx context.Context, txnList []*Mercu
 		recapDebitCount++
 		recapDebitAmount = new(big.Rat).Add(recapDebitAmount, txnAmount)
 	}
-	lines = append(lines, mercuryUT(recapNumber, mercuryFormat3(batchNo), batchCreditCount, batchCreditAmount, batchDebitCount, batchDebitAmount, fd))
-	lines = append(lines, mercuryUY(recapNumber, recapCreditCount, recapCreditAmount, recapDebitCount, recapDebitAmount, fd))
+	lines = append(lines, mercuryUT(recapNumber, mercuryFormat3(batchNo), batchCreditCount, batchCreditAmount, batchDebitCount, batchDebitAmount))
+	lines = append(lines, mercuryUY(recapNumber, recapCreditCount, recapCreditAmount, recapDebitCount, recapDebitAmount))
 
 	return s.writeMercuryLinesToFile(lines, insShortName, fileName)
 }
@@ -377,21 +377,21 @@ func mercuryUH(recapNumber, batchNo, recapDate string) string {
 	return strings.Join([]string{mercuryTRANS, "UH", mercurySFTER, recapNumber, mercuryDFTER, batchNo, recapDate}, ">")
 }
 
-func mercuryUT(recapNumber, batchNo string, creditCount int, creditAmount *big.Rat, debitCount int, debitAmount *big.Rat, fd int) string {
+func mercuryUT(recapNumber, batchNo string, creditCount int, creditAmount *big.Rat, debitCount int, debitAmount *big.Rat) string {
 	return strings.Join([]string{
 		mercuryTRANS, "UT", mercurySFTER, recapNumber, mercuryDFTER, batchNo,
-		fmt.Sprintf("%01d", creditCount), mercuryRatAmount(creditAmount, fd),
-		fmt.Sprintf("%01d", debitCount), mercuryRatAmount(debitAmount, fd),
+		fmt.Sprintf("%01d", creditCount), mercuryMinorUnits(creditAmount),
+		fmt.Sprintf("%01d", debitCount), mercuryMinorUnits(debitAmount),
 	}, ">")
 }
 
-func mercuryUY(recapNumber string, creditCount int, creditAmount *big.Rat, debitCount int, debitAmount *big.Rat, fd int) string {
+func mercuryUY(recapNumber string, creditCount int, creditAmount *big.Rat, debitCount int, debitAmount *big.Rat) string {
 	netAmount := new(big.Rat).Sub(creditAmount, debitAmount)
 	return strings.Join([]string{
 		mercuryTRANS, "UY", mercurySFTER, recapNumber, mercuryDFTER,
-		fmt.Sprintf("%01d", creditCount), mercuryRatAmount(creditAmount, fd),
-		fmt.Sprintf("%01d", debitCount), mercuryRatAmount(debitAmount, fd),
-		"01.000", mercuryRatAmount(netAmount, fd),
+		fmt.Sprintf("%01d", creditCount), mercuryMinorUnits(creditAmount),
+		fmt.Sprintf("%01d", debitCount), mercuryMinorUnits(debitAmount),
+		"01.000", mercuryMinorUnits(netAmount),
 		"", "", "", "", "", "",
 	}, ">")
 }
@@ -400,7 +400,7 @@ func mercuryXD(txn *MercuryAcqTxnWorkEntity, recapNumber, batchNo, seqNo string,
 	p := response[txn.EncryptedCardNumber]
 	return strings.Join([]string{
 		mercuryTRANS, "XD", mercurySFTER, recapNumber, mercuryDFTER, batchNo, seqNo,
-		p, mercuryFormatAmount(txn.TxnAmount, mult), mercuryDate(txn.TxnDate), "TS",
+		p, mercuryMinorUnits(mercuryAmount(txn.TxnAmount, mult)), mercuryDate(txn.TxnDate), "TS",
 		mercuryText(txn.ChargeType), mercuryFixed(txn.MeName, 36), mercuryFixed(txn.MeCity, 26),
 		mercuryText(txn.GeoArea), "000", mercuryText(txn.TypeOfCharge), mercuryReferenceNumber(),
 		mercuryText(txn.ApprovalCode), mercuryText(txn.MerchantId), "", "", "",
@@ -409,9 +409,9 @@ func mercuryXD(txn *MercuryAcqTxnWorkEntity, recapNumber, batchNo, seqNo string,
 		mercuryText(txn.Mcc), "", "", "", mercuryText(txn.Rrn), mercuryText(txn.TerminalId),
 		"", "", "", "", mercuryText(txn.ChPresent), mercuryText(txn.CardPresent),
 		mercuryText(txn.CardInputMode), "", "", mercuryTextLen(txn.MercuryRefId, 15),
-		mercuryText(txn.CardInputCapability), mercurySurchargeAmount(txn.SurchargeAmount, mult),
+		mercuryText(txn.CardInputCapability), mercuryMinorUnits(mercuryAmount(txn.SurchargeAmount, mult)),
 		"", mercuryText(txn.GeoArea), "", "", "", "", "", "",
-		"", "", "", "", "", "", "", "", "", "",
+		mercuryText(txn.ResponseCode), "", "", "", "", "", "", "", "", "",
 	}, ">")
 }
 
@@ -445,7 +445,7 @@ func mercuryXC(txn *MercuryAcqTxnWorkEntity, recapNumber, batchNo, seqNo string)
 func mercuryMC(txn *MercuryAcqTxnWorkEntity, recapNumber, batchNo, seqNo string, mult *big.Rat) string {
 	return strings.Join([]string{
 		mercuryTRANS, "MC", mercurySFTER, recapNumber, mercuryDFTER, batchNo, seqNo, "001",
-		mercuryFormatAmount(txn.CashBackAmount, mult),
+		mercuryMinorUnits(mercuryAmount(txn.CashBackAmount, mult)),
 	}, ">")
 }
 
@@ -495,74 +495,20 @@ func mercuryAmount(v float64, mult *big.Rat) *big.Rat {
 	return new(big.Rat).Mul(rat, mult)
 }
 
-// mercuryFormatAmount renders the raw monetary amount as a plain decimal with
-// the currency's fraction digits (e.g. "2000.00" for AED), matching the scheme
-// sample (EIFSAMPLE.EIF). No scaling is applied to the value.
-func mercuryFormatAmount(v float64, mult *big.Rat) string {
-	return mercuryDecimalRat(decimalRat(v), mercuryFracDigits(mult))
-}
-
 // mercuryAmount12 formats value*multiplier (minor units, e.g. 14.50 AED ->
-// 1450) rounded half-up and zero-padded to 12 digits, matching the scheme
-// sample's XM CAMTA/CAMTO (the Java double-multiply was dropped).
+// 1450) rounded half-up and zero-padded to 12 digits, matching the reconciled
+// reference file's XM CAMTA/CAMTO (the Java double-multiply was dropped).
 func mercuryAmount12(v float64, mult *big.Rat) string {
 	amt := mercuryAmount(v, mult)
 	n := mercuryRatHalfUpInt(amt)
 	return fmt.Sprintf("%012d", n)
 }
 
-// mercuryRatAmount formats an amount Rat as a plain decimal with the currency's
-// fraction digits, e.g. ".00" and "35912.75" per the scheme sample.
-func mercuryRatAmount(r *big.Rat, fd int) string {
-	return mercuryDecimalRat(r, fd)
-}
-
-// mercuryFracDigits returns the fraction digits implied by the currency
-// multiplier (mult = 10^fd), e.g. 100 -> 2.
-func mercuryFracDigits(mult *big.Rat) int {
-	if !mult.IsInt() {
-		return 0
-	}
-	s := mult.Num().String()
-	if len(s) == 0 || s[0] != '1' {
-		return 0
-	}
-	return len(s) - 1
-}
-
-// mercuryDecimalRat renders a Rat as a decimal with exactly fd fraction digits,
-// integer part without leading zeros (empty for zero), half-up rounding.
-func mercuryDecimalRat(r *big.Rat, fd int) string {
-	scaled := new(big.Rat).Mul(r, new(big.Rat).SetInt64(pow10int(fd)))
-	n := mercuryRatHalfUpInt(scaled)
-	sign := ""
-	if n < 0 {
-		sign = "-"
-		n = -n
-	}
-	div := pow10int(fd)
-	intPart := n / div
-	fracPart := n % div
-	intStr := ""
-	if intPart != 0 {
-		intStr = strconv.FormatInt(intPart, 10)
-	}
-	if fd == 0 {
-		if sign == "" && intStr == "" {
-			return "0"
-		}
-		return sign + intStr
-	}
-	return sign + intStr + "." + fmt.Sprintf("%0*d", fd, fracPart)
-}
-
-// mercurySurchargeAmount renders the surcharge fee as a decimal; empty when the
-// fee is zero (the scheme sample omits zero surcharges).
-func mercurySurchargeAmount(v float64, mult *big.Rat) string {
-	if v == 0 {
-		return ""
-	}
-	return mercuryFormatAmount(v, mult)
+// mercuryMinorUnits renders an amount (already scaled to minor units) as a
+// plain integer, e.g. 3200 for 32.00 AED, matching the reconciled reference
+// file's CAMTR and UT/UY amounts.
+func mercuryMinorUnits(r *big.Rat) string {
+	return strconv.FormatInt(mercuryRatHalfUpInt(r), 10)
 }
 
 // mercuryRatHalfUpInt rounds a Rat to the nearest integer, half up (rounds
