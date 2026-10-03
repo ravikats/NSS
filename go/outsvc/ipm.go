@@ -3,6 +3,7 @@ package outsvc
 import (
 	"errors"
 	"strconv"
+	"strings"
 )
 
 var errFieldTooShort = errors.New("field value shorter than fixed element length")
@@ -214,7 +215,7 @@ func addFieldBIN(de, msg, fieldValue string) (string, error) {
 func addFieldAlphaAscii(de, msg, fieldValue string) (string, error) {
 	n := getFieldLength(atoi(de))
 	if len(fieldValue) < n {
-		return msg, errFieldTooShort
+		fieldValue = fieldValue + strings.Repeat(" ", n-len(fieldValue))
 	}
 	return msg + fieldValue[:n], nil
 }

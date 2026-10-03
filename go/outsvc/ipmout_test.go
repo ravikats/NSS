@@ -92,7 +92,7 @@ func TestTransformIPM(t *testing.T) {
 }
 
 func TestCreateHeaderMessage(t *testing.T) {
-	p := NewIpmOutProcessor("/tmp", "X", nil, nil)
+	p := NewIpmOutProcessor("/tmp", "", "X", nil, nil)
 	var log bytes.Buffer
 	var out bytes.Buffer
 	procID := "12345678901"
@@ -137,58 +137,58 @@ func viewEntity() *ViewIpmOutWorkEntity {
 	de031 := "012345678901234567890123"
 	de043 := "0123456789012345678901234567890123456789"
 	return &ViewIpmOutWorkEntity{
-		SerialNo:       1,
-		De001:          ptrs("0200"),
-		De002:          ptrs("tok1"),
-		De003:          ptrs("000000"),
-		De004:          ptrs("000000000100"),
-		De012:          ptrs("123456123456"),
-		De022:          ptrs("021021021021"),
-		De023:          ptrs("001"),
-		De024:          ptrs("003"),
-		De025:          ptrs("0101"),
-		De026:          ptrs("0001"),
-		De030:          &de030,
-		De031:          &de031,
-		De033:          ptrs("001"),
-		De037:          ptrs("012345678901"),
-		De038:          ptrs("012345"),
-		De040:          ptrs("512"),
-		De041:          ptrs("01234567"),
-		De042:          ptrs("012345678901234"),
-		De043:          &de043,
-		De049:          ptrs("USD"),
-		De063:          ptrs("01234567"),
-		De071:          ptrs("00000001"),
-		De093:          ptrs("01234567"),
-		De095:          ptrs("01234567"),
-		De0480025:      ptrs("P25"),
-		De0480052:      ptrs("P52"),
-		De0480149:      ptrs("P149"),
-		De0480165:      ptrs("P165"),
-		De0559f26:      ptrs("9F260400000000"),
-		De0559f27:      ptrs("5F27020000"),
-		De0559f10:      ptrs("9F10080000000000000000"),
-		De0559f34:      ptrs("5F340100"),
-		De0559f33:      ptrs("9F3303000000"),
-		De0559f37:      ptrs("9F370400000000"),
-		De0559f36:      ptrs("9F36020000"),
-		De05595:        ptrs("95050000000000"),
-		De0559a:        ptrs("9A03010101"),
-		De0559c:        ptrs("9C0100"),
-		De0559f02:      ptrs("9F0206000000000000"),
-		De0555f2a:      ptrs("5F2A020826"),
-		De05582:        ptrs("82020000"),
-		De0559f1a:      ptrs("9F1A020826"),
-		De0559f03:      ptrs("9F0306000000000000"),
-		De05584:        ptrs("840400000000"),
-		LocalDateTime:  ptrs("2026-08-14 12:00:00.0"),
-		TxnType:        ptrs("POS"),
-		TxnAmount:      ptrs("100.00"),
-		De048Pds0213:   ptrs("P213"),
-		De0480170:      ptrs("P170"),
-		De0480018:      ptrs("P018"),
-		De0480175:      ptrs("P175"),
+		SerialNo:      1,
+		De001:         ptrs("0200"),
+		De002:         ptrs("tok1"),
+		De003:         ptrs("000000"),
+		De004:         ptrs("000000000100"),
+		De012:         ptrs("123456123456"),
+		De022:         ptrs("021021021021"),
+		De023:         ptrs("001"),
+		De024:         ptrs("003"),
+		De025:         ptrs("0101"),
+		De026:         ptrs("0001"),
+		De030:         &de030,
+		De031:         &de031,
+		De033:         ptrs("001"),
+		De037:         ptrs("012345678901"),
+		De038:         ptrs("012345"),
+		De040:         ptrs("512"),
+		De041:         ptrs("01234567"),
+		De042:         ptrs("012345678901234"),
+		De043:         &de043,
+		De049:         ptrs("USD"),
+		De063:         ptrs("01234567"),
+		De071:         ptrs("00000001"),
+		De093:         ptrs("01234567"),
+		De095:         ptrs("01234567"),
+		De0480025:     ptrs("P25"),
+		De0480052:     ptrs("P52"),
+		De0480149:     ptrs("P149"),
+		De0480165:     ptrs("P165"),
+		De0559f26:     ptrs("9F260400000000"),
+		De0559f27:     ptrs("5F27020000"),
+		De0559f10:     ptrs("9F10080000000000000000"),
+		De0559f34:     ptrs("5F340100"),
+		De0559f33:     ptrs("9F3303000000"),
+		De0559f37:     ptrs("9F370400000000"),
+		De0559f36:     ptrs("9F36020000"),
+		De05595:       ptrs("95050000000000"),
+		De0559a:       ptrs("9A03010101"),
+		De0559c:       ptrs("9C0100"),
+		De0559f02:     ptrs("9F0206000000000000"),
+		De0555f2a:     ptrs("5F2A020826"),
+		De05582:       ptrs("82020000"),
+		De0559f1a:     ptrs("9F1A020826"),
+		De0559f03:     ptrs("9F0306000000000000"),
+		De05584:       ptrs("840400000000"),
+		LocalDateTime: ptrs("2026-08-14 12:00:00.0"),
+		TxnType:       ptrs("POS"),
+		TxnAmount:     ptrs("100.00"),
+		De048Pds0213:  ptrs("P213"),
+		De0480170:     ptrs("P170"),
+		De0480018:     ptrs("P018"),
+		De0480175:     ptrs("P175"),
 	}
 }
 
@@ -266,6 +266,7 @@ type fakeStore struct {
 	report             []*OutgoingReportDataWorkEntity
 	data               []*McAcqTxnDataEntity
 	posStatusCompleted bool
+	failedFileId       string
 }
 
 func (f *fakeStore) FindMcWorkBetween(ctx context.Context, ins, status int, from, to time.Time) ([]*McAcqTxnWorkEntity, error) {
@@ -278,6 +279,13 @@ func (f *fakeStore) FindMcWorkLessThanEqual(ctx context.Context, ins, status int
 
 func (f *fakeStore) UpdateMcWorkStatuses(ctx context.Context, ents []*McAcqTxnWorkEntity) error {
 	f.work = ents
+	return nil
+}
+
+// FailMcWorkByFileId records the rows a strict validation failure would mark
+// as failed (7).
+func (f *fakeStore) FailMcWorkByFileId(ctx context.Context, ins int, fileId string) error {
+	f.failedFileId = fileId
 	return nil
 }
 
@@ -350,7 +358,7 @@ func TestIpmProEndToEnd(t *testing.T) {
 		},
 	}
 	crypto := &fakeCrypto{dec: map[string]string{"tok1": "4111111111111111"}}
-	p := NewIpmOutProcessor(dir, "X", st, crypto)
+	p := NewIpmOutProcessor(dir, filepath.Join(dir, "ipm_reports"), "X", st, crypto)
 
 	from := time.Date(2026, 8, 14, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 8, 14, 23, 59, 59, 0, time.UTC)
@@ -388,5 +396,110 @@ func TestIpmProEndToEnd(t *testing.T) {
 	}
 	if len(st.report) != 1 {
 		t.Fatalf("report rows = %d, want 1", len(st.report))
+	}
+}
+
+// TestIpmProValidatesGeneratedFile proves the compliance validator is bound
+// into generation: a hook fires for the file that was just written.
+func TestIpmProValidatesGeneratedFile(t *testing.T) {
+	dir := t.TempDir()
+	st := &fakeStore{
+		work: []*McAcqTxnWorkEntity{{SerNumber: 7, InstitutionCode: 1, GeneralStatus: 3, TxnType: "POS"}},
+		view: []*ViewIpmOutWorkEntity{viewEntity()},
+		summaryGroups: []mcSummaryGroup{
+			{MessageTypeId: "0200", FunctionCode: "200", ProcCode: "00", Count: 1, Amount: 100, SurAmount: 5, NetAmount: 105},
+		},
+	}
+	crypto := &fakeCrypto{dec: map[string]string{"tok1": "4111111111111111"}}
+	p := NewIpmOutProcessor(dir, filepath.Join(dir, "ipm_reports"), "X", st, crypto)
+
+	var got []*ValidationResult
+	p.SetValidationHook(func(r *ValidationResult) { got = append(got, r) })
+
+	from := time.Date(2026, 8, 14, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 8, 14, 23, 59, 59, 0, time.UTC)
+	fileName := "IRFR11114082026.01"
+	p.IpmPro(context.Background(), fileName, "12345678901", 1, 1, 11,
+		time.Date(2026, 8, 14, 0, 0, 0, 0, time.UTC), 42, 4, &from, &to, "")
+
+	if len(got) != 1 {
+		t.Fatalf("validation hook fired %d times, want 1", len(got))
+	}
+	if got[0].Network != "MASTERCARD" || got[0].File != fileName {
+		t.Errorf("hook result = %+v, want MASTERCARD/%s", got[0], fileName)
+	}
+	if got[0].Records < 1 {
+		t.Errorf("validated records = %d, want at least 1", got[0].Records)
+	}
+	// The synthetic fixture does not satisfy the shipped rules (it has no real
+	// footer totals), so the hook must report a failure. That is exactly what
+	// makes the report-only default observable.
+	if got[0].OK {
+		t.Error("expected the synthetic fixture to fail compliance")
+	}
+	if len(got[0].Errors) == 0 {
+		t.Error("a failed validation must carry at least one message")
+	}
+}
+
+// TestIpmProStrictValidationAborts proves strict mode turns a failing file
+// into an empty fileId and marks the work rows failed (7).
+func TestIpmProStrictValidationAborts(t *testing.T) {
+	dir := t.TempDir()
+	st := &fakeStore{
+		work: []*McAcqTxnWorkEntity{{SerNumber: 7, InstitutionCode: 1, GeneralStatus: 3, TxnType: "POS"}},
+		view: []*ViewIpmOutWorkEntity{viewEntity()},
+		summaryGroups: []mcSummaryGroup{
+			{MessageTypeId: "0200", FunctionCode: "200", ProcCode: "00", Count: 1, Amount: 100, SurAmount: 5, NetAmount: 105},
+		},
+	}
+	crypto := &fakeCrypto{dec: map[string]string{"tok1": "4111111111111111"}}
+	p := NewIpmOutProcessor(dir, filepath.Join(dir, "ipm_reports"), "X", st, crypto)
+	p.SetStrict(true)
+
+	from := time.Date(2026, 8, 14, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 8, 14, 23, 59, 59, 0, time.UTC)
+	fileName := "IRFR11114082026.01"
+	fileID := p.IpmPro(context.Background(), fileName, "12345678901", 1, 1, 11,
+		time.Date(2026, 8, 14, 0, 0, 0, 0, time.UTC), 42, 4, &from, &to, "")
+
+	// The synthetic record does not satisfy the shipped compliance rules, so
+	// strict mode must refuse to release it.
+	if fileID != "" {
+		t.Errorf("strict IpmPro fileId = %q, want empty", fileID)
+	}
+	if st.failedFileId != fileName {
+		t.Errorf("work rows marked failed for %q, want %q", st.failedFileId, fileName)
+	}
+	if st.posStatusCompleted {
+		t.Error("POS statuses must not be completed when validation failed")
+	}
+}
+
+// TestIpmProNonStrictKeepsFile is the counterpart: the default report-only mode
+// generates the file even though validation failed.
+func TestIpmProNonStrictKeepsFile(t *testing.T) {
+	dir := t.TempDir()
+	st := &fakeStore{
+		work: []*McAcqTxnWorkEntity{{SerNumber: 7, InstitutionCode: 1, GeneralStatus: 3, TxnType: "POS"}},
+		view: []*ViewIpmOutWorkEntity{viewEntity()},
+		summaryGroups: []mcSummaryGroup{
+			{MessageTypeId: "0200", FunctionCode: "200", ProcCode: "00", Count: 1, Amount: 100, SurAmount: 5, NetAmount: 105},
+		},
+	}
+	crypto := &fakeCrypto{dec: map[string]string{"tok1": "4111111111111111"}}
+	p := NewIpmOutProcessor(dir, filepath.Join(dir, "ipm_reports"), "X", st, crypto)
+
+	from := time.Date(2026, 8, 14, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 8, 14, 23, 59, 59, 0, time.UTC)
+	fileName := "IRFR11114082026.01"
+	fileID := p.IpmPro(context.Background(), fileName, "12345678901", 1, 1, 11,
+		time.Date(2026, 8, 14, 0, 0, 0, 0, time.UTC), 42, 4, &from, &to, "")
+
+	if fileID == "" {
+		t.Fatal("non-strict IpmPro must still produce a fileId")
+	}
+	if st.failedFileId != "" {
+		t.Errorf("work rows must not be marked failed in non-strict mode (got %q)", st.failedFileId)
 	}
 }

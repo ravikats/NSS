@@ -20,12 +20,14 @@
 //	INS_SHORT_NAME        e.g. IRF
 //	UPDATED_USER          updated-by user id (default 4)
 //	MASTERCARD_SYSTEM_CODE / VISA_SYSTEM_CODE / JAYWAN_SYSTEM_CODE / AMEX_SYSTEM_CODE / MERCURY_SYSTEM_CODE
+//	MERCURY_MEMBER_ID     Mercury member id used in the "Documents.<memberId><yyyyMMdd>" file name
 //	GCO_SYSTEM_CODE       MC collection system code
 //	GOC_SYSTEM_CODE       Visa collection system code
 //	RECON_OUT_<INS_SHORT_NAME>  base output directory for files
 //	PROCESSING_MODE       IPM header processing mode
 //	encUrl / decUrl / bankId / accessToken / cryptUserName / cryptPassword
 //	cryptAppIdEncryption / cryptAppIdDecryption / cryptClientId
+//	REGION                         Amex FSF region (e.g. "MENA"); blank = default formatting
 package main
 
 import (
@@ -97,6 +99,7 @@ func main() {
 		JaywanSysCode:      envInt("JAYWAN_SYSTEM_CODE", 0),
 		AmexSysCode:        envInt("AMEX_SYSTEM_CODE", 0),
 		MercurySysCode:     envInt("MERCURY_SYSTEM_CODE", 0),
+		MercuryMemberId:    env("MERCURY_MEMBER_ID", ""),
 		UnionPaySysCode:    envInt("UNIONPAY_SYSTEM_CODE", 0),
 		GCOSysCode:         envInt("GCO_SYSTEM_CODE", 0),
 		GOCSysCode:         envInt("GOC_SYSTEM_CODE", 0),
@@ -107,6 +110,10 @@ func main() {
 		FileCategory:       env("FILE_CATEGORY", ""),
 		VersionNumber:      env("VERSION_NUMBER", ""),
 		UnionPayVersionTag: env("UNIONPAY_VERSION_TAG", "TEST"),
+		Region:             env("REGION", ""),
+		// Report-only by default: see OutgoingConfig.IPMValidationStrict.
+		IPMValidationStrict: env("IPM_VALIDATION_STRICT", "") == "true" || env("IPM_VALIDATION_STRICT", "") == "1",
+		IPMReportsDir:       env("IPM_REPORTS_DIR", ""),
 	}
 
 	crypto := outsvc.NewCryptoClient(outsvc.CryptoConfig{
@@ -128,6 +135,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /outgoing/v1/generateOutgoing", ctl.GenerateOutgoing)
 	mux.HandleFunc("POST /outgoing/v1/revertLastOutgoing", ctl.RevertLastOutgoing)
+	mux.HandleFunc("GET /outgoing/v1/validations", ctl.Validations)
 	mux.HandleFunc("PUT /outgoing/v1/updateRejectedData", ctl.UpdateRejectedData)
 	mux.HandleFunc("POST /outgoing/v1/generateCollectionOnly", ctl.GenerateCollectionOnly)
 	mux.HandleFunc("POST /outgoing/v1/revertLastCollectionOnly", ctl.RevertLastCollectionOnly)

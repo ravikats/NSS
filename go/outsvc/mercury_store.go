@@ -14,8 +14,8 @@ func (s *oracleStore) CountMercuryWorkBetween(ctx context.Context, ins, status i
 	var n int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM MERCURY_ACQ_TXN_WORK
-		WHERE MAT_INS_CODE = :1 AND MAT_GEN_STATUS = :2 AND MAT_LOCAL_DATE_TIME BETWEEN :3 AND :4`,
-		ins, status, from, to).Scan(&n)
+		WHERE MAT_INS_CODE = :1 AND MAT_GEN_STATUS = :2 AND MAT_LOCAL_DATE_TIME BETWEEN TO_DATE(:3,'YYYY-MM-DD HH24:MI:SS') AND TO_DATE(:4,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, status, oraTime(from), oraTime(to)).Scan(&n)
 	return n, err
 }
 
@@ -23,8 +23,8 @@ func (s *oracleStore) CountMercuryWorkLessThanEqual(ctx context.Context, ins, st
 	var n int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM MERCURY_ACQ_TXN_WORK
-		WHERE MAT_INS_CODE = :1 AND MAT_GEN_STATUS = :2 AND MAT_LOCAL_DATE_TIME <= :3`,
-		ins, status, to).Scan(&n)
+		WHERE MAT_INS_CODE = :1 AND MAT_GEN_STATUS = :2 AND MAT_LOCAL_DATE_TIME <= TO_DATE(:3,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, status, oraTime(to)).Scan(&n)
 	return n, err
 }
 
@@ -32,8 +32,8 @@ func (s *oracleStore) FindMercuryWorkBetween(ctx context.Context, ins, intCode, 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT * FROM MERCURY_ACQ_TXN_WORK
 		WHERE MAT_INS_CODE = :1 AND MAT_INT_CODE = :2 AND MAT_GEN_STATUS = :3
-		  AND MAT_LOCAL_DATE_TIME BETWEEN :4 AND :5`,
-		ins, intCode, status, from, to)
+		  AND MAT_LOCAL_DATE_TIME BETWEEN TO_DATE(:4,'YYYY-MM-DD HH24:MI:SS') AND TO_DATE(:5,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, intCode, status, oraTime(from), oraTime(to))
 	if err != nil {
 		return nil, err
 	}
@@ -45,8 +45,8 @@ func (s *oracleStore) FindMercuryWorkLessThanEqual(ctx context.Context, ins, int
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT * FROM MERCURY_ACQ_TXN_WORK
 		WHERE MAT_INS_CODE = :1 AND MAT_INT_CODE = :2 AND MAT_GEN_STATUS = :3
-		  AND MAT_LOCAL_DATE_TIME <= :4`,
-		ins, intCode, status, to)
+		  AND MAT_LOCAL_DATE_TIME <= TO_DATE(:4,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, intCode, status, oraTime(to))
 	if err != nil {
 		return nil, err
 	}
@@ -172,6 +172,44 @@ func mercuryInsertValues(n int) string {
 		parts[i] = fmt.Sprintf(":%d", i+1)
 	}
 	return strings.Join(parts, ",")
+}
+
+// mercuryWorkColumns is mercuryColumns without the identity MAT_SER_NUMBER, so
+// re-queued rows get a fresh serial from the WORK table's identity column.
+var mercuryWorkColumns = strings.TrimPrefix(strings.TrimSpace(mercuryColumns), "MAT_SER_NUMBER,")
+
+// FindMercuryDataByFileId returns the archived rows of a generated file, used
+// by revertLastOutgoingData to re-queue them.
+func (s *oracleStore) FindMercuryDataByFileId(ctx context.Context, ins int, fileId string) ([]*MercuryAcqTxnDataEntity, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT * FROM MERCURY_ACQ_TXN_DATA WHERE MAT_INS_CODE = :1 AND MAT_FILE_ID = :2`, ins, fileId)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return bindMercuryWork(rows)
+}
+
+// InsertMercuryWork re-queues archived rows into MERCURY_ACQ_TXN_WORK. It
+// reuses mercuryDataArgs with the leading serial dropped so the column list and
+// the bind list stay in lockstep.
+func (s *oracleStore) InsertMercuryWork(ctx context.Context, ents []*MercuryAcqTxnWorkEntity) error {
+	sqlStmt := "INSERT INTO MERCURY_ACQ_TXN_WORK (" + mercuryWorkColumns + ") VALUES (" + mercuryInsertValues(73) + ")"
+	for _, e := range ents {
+		if _, err := s.db.ExecContext(ctx, sqlStmt, mercuryDataArgs(e)[1:]...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *oracleStore) DeleteMercuryData(ctx context.Context, ents []*MercuryAcqTxnDataEntity) error {
+	for _, e := range ents {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM MERCURY_ACQ_TXN_DATA WHERE MAT_SER_NUMBER = :1`, e.SerialNumber); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // CompleteMercuryPosStatus mirrors PosTransactionRepo.completeMercuryPosStatus.

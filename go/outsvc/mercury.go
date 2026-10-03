@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"empay/irf/eif"
 )
 
 // Mercury outgoing constants mirroring MercuryFileServiceImpl and
@@ -67,10 +69,6 @@ func (s *OutgoingService) ProcessMercuryOutgoing(ctx context.Context, insCode, u
 		return "Acquirer bin not found"
 	}
 	acqBin := acqBinList[0]
-	recapNumber := ""
-	if acqBin.McIcaNo != nil {
-		recapNumber = *acqBin.McIcaNo
-	}
 
 	var txnList []*MercuryAcqTxnWorkEntity
 	if startDate == nil {
@@ -126,7 +124,10 @@ func (s *OutgoingService) ProcessMercuryOutgoing(ctx context.Context, insCode, u
 
 	for _, fileTxns := range splitMercuryTransactions(txnList) {
 		sequence := s.updateAndGetMercuryFileSequence(ctx, acqBin, now)
-		fileName := "EIF_" + now.Format("02012006") + fmt.Sprintf(".%03d", sequence)
+		// Mercury file naming convention: "Documents." + member id + yyyyMMdd
+		// (member id is configured via MERCURY_MEMBER_ID).
+		fileName := "Documents." + s.cfg.MercuryMemberId + now.Format("20060102")
+		recapNumber := mercuryFormat3(sequence)
 		outgoingLogSerialNumber := s.inserOutFileLog(ctx, user, insCode, intCode, forCode)
 		if outgoingLogSerialNumber == 0 {
 			return "Failed"
@@ -137,6 +138,31 @@ func (s *OutgoingService) ProcessMercuryOutgoing(ctx context.Context, insCode, u
 			s.updateOutFilelog(ctx, insCode, outgoingLogSerialNumber, fileName, nil)
 			return "Outgoing Failed"
 		}
+
+		// Reconcile the file's batch/recap totals before releasing it. A
+		// mismatch means the file is unsafe to send to the network, so mark
+		// the work rows and file log as failed (7 / 5) instead of 4.
+		report, verr := eif.ValidateFile(filepath.Join(s.cfg.ReconOutDir, fileName))
+		if verr == nil && !report.OK() {
+			verr = fmt.Errorf("%s", strings.Join(report.Errors, "; "))
+		}
+		validation := newValidationResult("MERCURY", fileName, report, verr, s.now())
+		s.recordValidation(validation)
+		if verr != nil {
+			logOutsvc("ValidateMercuryEIF", verr)
+			s.failMercuryFile(ctx, insCode, outgoingLogSerialNumber, fileName, fileTxns, user)
+			return "Outgoing Failed"
+		}
+		fmt.Fprintf(os.Stderr, "outsvc: ValidateMercuryEIF: %s: OK (%d batches, %d txns)\n",
+			fileName, validation.Batches, validation.TxnCount)
+
+		fid := fileId
+		s.updateOutFilelog(ctx, insCode, outgoingLogSerialNumber, fileName, &fid)
+
+		// Insert the summary while the file rows are still gen_status=9 so the
+		// insertIntoOutgoingSummary grouping query finds them (the Java port
+		// flipped rows 9->4 first, silently producing empty summaries).
+		s.insertMercuryIntoOutgoingSummary(ctx, user, insCode, intCode, fileName, outgoingLogSerialNumber)
 
 		// Set the file rows 9 -> 4 with the file id.
 		now := s.now()
@@ -150,9 +176,6 @@ func (s *OutgoingService) ProcessMercuryOutgoing(ctx context.Context, insCode, u
 			logOutsvc("UpdateMercuryWorkStatuses", err)
 			return "Failed"
 		}
-		fid := fileId
-		s.updateOutFilelog(ctx, insCode, outgoingLogSerialNumber, fileName, &fid)
-		s.insertMercuryIntoOutgoingSummary(ctx, user, insCode, intCode, fileName, outgoingLogSerialNumber)
 		// generateOutgoingSummaryPDF is not ported.
 	}
 
@@ -162,6 +185,33 @@ func (s *OutgoingService) ProcessMercuryOutgoing(ctx context.Context, insCode, u
 	}
 	s.moveMercuryWorkToData(ctx, insCode, user)
 	return "Success"
+}
+
+// failMercuryFile marks the file log (5 = failed) and the affected work rows
+// (7 = failed) when the generated EIF does not reconcile.
+func (s *OutgoingService) failMercuryFile(ctx context.Context, insCode int, serial int64, fileName string, txns []*MercuryAcqTxnWorkEntity, user int) {
+	s.updateOutFilelog(ctx, insCode, serial, fileName, nil)
+	now := s.now()
+	for _, e := range txns {
+		e.LastUpdated = now
+		e.UpdatedUser = user
+		e.GenStatus = 7
+	}
+	if err := s.store.UpdateMercuryWorkStatuses(ctx, txns); err != nil {
+		logOutsvc("UpdateMercuryWorkStatuses", err)
+	}
+}
+
+// mapMercuryDataToWork re-queues an archived row for regeneration: new identity
+// serial, status 3 (pending) and no file stamps. The transaction dates are
+// preserved because the work-table date filters use MAT_LOCAL_DATE_TIME.
+func mapMercuryDataToWork(d *MercuryAcqTxnDataEntity) *MercuryAcqTxnWorkEntity {
+	w := *d
+	w.SerialNumber = 0
+	w.GenStatus = 3
+	w.FileID = ""
+	w.FileProcDate = nil
+	return &w
 }
 
 func splitMercuryTransactions(txnList []*MercuryAcqTxnWorkEntity) [][]*MercuryAcqTxnWorkEntity {
@@ -229,7 +279,7 @@ func (s *OutgoingService) insertMercuryIntoOutgoingSummary(ctx context.Context, 
 			OutFileDate:     dateOnly(now),
 			FileId:          fileName,
 			RefSerialNumber: outgoingLogSerialNumber,
-			MessageTypeId:   txnCode,
+			MessageTypeId:   summaryMessageType(txnCode),
 			FunctionCode:    "1",
 			ProcCode:        "",
 			Count:           totals.count,
@@ -242,6 +292,17 @@ func (s *OutgoingService) insertMercuryIntoOutgoingSummary(ctx context.Context, 
 			logOutsvc("InsertSummaries", err)
 		}
 	}
+}
+
+// summaryMessageType caps the OTS_MTI value at the 4-char column width. Work
+// rows carry their txn type (e.g. Mercury "1240", UnionPay process code
+// "000000"); the Java writer stores the txn type verbatim in the 4-char
+// OTS_MTI column, so longer values are truncated to fit.
+func summaryMessageType(txnCode string) string {
+	if len(txnCode) > 4 {
+		return txnCode[:4]
+	}
+	return txnCode
 }
 
 // moveMercuryWorkToData mirrors MercuryOutgoingServiceImpl.moveWorkToData:
@@ -305,7 +366,7 @@ func (s *OutgoingService) writeMercuryFile(ctx context.Context, txnList []*Mercu
 
 	for _, txn := range txnList {
 		if batchTxnCount == mercuryMaxBatchRecord {
-			lines = append(lines, mercuryUT(recapNumber, mercuryFormat3(batchNo), batchCreditCount, batchCreditAmount, batchDebitCount, batchDebitAmount))
+			lines = append(lines, mercuryUT(recapNumber, mercuryFormat3(batchNo), batchCreditCount, batchCreditAmount, batchDebitCount, batchDebitAmount, mult))
 			batchNo++
 			seqNo = 1
 			batchTxnCount = 0
@@ -342,8 +403,8 @@ func (s *OutgoingService) writeMercuryFile(ctx context.Context, txnList []*Mercu
 		recapDebitCount++
 		recapDebitAmount = new(big.Rat).Add(recapDebitAmount, txnAmount)
 	}
-	lines = append(lines, mercuryUT(recapNumber, mercuryFormat3(batchNo), batchCreditCount, batchCreditAmount, batchDebitCount, batchDebitAmount))
-	lines = append(lines, mercuryUY(recapNumber, recapCreditCount, recapCreditAmount, recapDebitCount, recapDebitAmount))
+	lines = append(lines, mercuryUT(recapNumber, mercuryFormat3(batchNo), batchCreditCount, batchCreditAmount, batchDebitCount, batchDebitAmount, mult))
+	lines = append(lines, mercuryUY(recapNumber, recapCreditCount, recapCreditAmount, recapDebitCount, recapDebitAmount, mult))
 
 	return s.writeMercuryLinesToFile(lines, insShortName, fileName)
 }
@@ -377,30 +438,36 @@ func mercuryUH(recapNumber, batchNo, recapDate string) string {
 	return strings.Join([]string{mercuryTRANS, "UH", mercurySFTER, recapNumber, mercuryDFTER, batchNo, recapDate}, ">")
 }
 
-func mercuryUT(recapNumber, batchNo string, creditCount int, creditAmount *big.Rat, debitCount int, debitAmount *big.Rat) string {
+func mercuryUT(recapNumber, batchNo string, creditCount int, creditAmount *big.Rat, debitCount int, debitAmount *big.Rat, mult *big.Rat) string {
+	fd := mercuryFractionDigits(mult)
 	return strings.Join([]string{
 		mercuryTRANS, "UT", mercurySFTER, recapNumber, mercuryDFTER, batchNo,
-		fmt.Sprintf("%01d", creditCount), mercuryMinorUnits(creditAmount),
-		fmt.Sprintf("%01d", debitCount), mercuryMinorUnits(debitAmount),
+		fmt.Sprintf("%01d", creditCount), mercuryScaledDecimal(creditAmount, fd),
+		fmt.Sprintf("%01d", debitCount), mercuryScaledDecimal(debitAmount, fd),
 	}, ">")
 }
 
-func mercuryUY(recapNumber string, creditCount int, creditAmount *big.Rat, debitCount int, debitAmount *big.Rat) string {
+func mercuryUY(recapNumber string, creditCount int, creditAmount *big.Rat, debitCount int, debitAmount *big.Rat, mult *big.Rat) string {
+	fd := mercuryFractionDigits(mult)
 	netAmount := new(big.Rat).Abs(new(big.Rat).Sub(creditAmount, debitAmount))
 	return strings.Join([]string{
 		mercuryTRANS, "UY", mercurySFTER, recapNumber, mercuryDFTER,
-		fmt.Sprintf("%01d", creditCount), mercuryMinorUnits(creditAmount),
-		fmt.Sprintf("%01d", debitCount), mercuryMinorUnits(debitAmount),
-		"01.000", mercuryMinorUnits(netAmount),
+		fmt.Sprintf("%01d", creditCount), mercuryScaledDecimal(creditAmount, fd),
+		fmt.Sprintf("%01d", debitCount), mercuryScaledDecimal(debitAmount, fd),
+		"01.000", mercuryScaledDecimal(netAmount, fd),
 		"", "", "", "", "", "",
 	}, ">")
 }
 
 func mercuryXD(txn *MercuryAcqTxnWorkEntity, recapNumber, batchNo, seqNo string, response map[string]string, mult *big.Rat) string {
 	p := response[txn.EncryptedCardNumber]
+	surcharge := ""
+	if txn.SurchargeAmount != 0 {
+		surcharge = mercuryFormatAmount(txn.SurchargeAmount, mult)
+	}
 	return strings.Join([]string{
 		mercuryTRANS, "XD", mercurySFTER, recapNumber, mercuryDFTER, batchNo, seqNo,
-		p, mercuryMinorUnits(mercuryAmount(txn.TxnAmount, mult)), mercuryDate(txn.TxnDate), "TS",
+		p, mercuryFormatAmount(txn.TxnAmount, mult), mercuryDate(txn.TxnDate), "TS",
 		mercuryText(txn.ChargeType), mercuryFixed(txn.MeName, 36), mercuryFixed(txn.MeCity, 26),
 		mercuryText(txn.GeoArea), "000", mercuryText(txn.TypeOfCharge), mercuryReferenceNumber(),
 		mercuryText(txn.ApprovalCode), mercuryText(txn.MerchantId), "", "", "",
@@ -409,9 +476,9 @@ func mercuryXD(txn *MercuryAcqTxnWorkEntity, recapNumber, batchNo, seqNo string,
 		mercuryText(txn.Mcc), "", "", "", mercuryText(txn.Rrn), mercuryText(txn.TerminalId),
 		"", "", "", "", mercuryText(txn.ChPresent), mercuryText(txn.CardPresent),
 		mercuryText(txn.CardInputMode), "", "", mercuryTextLen(txn.MercuryRefId, 15),
-		mercuryText(txn.CardInputCapability), mercuryMinorUnits(mercuryAmount(txn.SurchargeAmount, mult)),
+		mercuryText(txn.CardInputCapability), surcharge,
 		"", mercuryText(txn.GeoArea), "", "", "", "", "", "",
-		mercuryText(txn.ResponseCode), "", "", "", "", "", "", "", "", "",
+		"", "", "", "", "", "", "", "", "", "",
 	}, ">")
 }
 
@@ -509,6 +576,80 @@ func mercuryAmount12(v float64, mult *big.Rat) string {
 // file's CAMTR and UT/UY amounts.
 func mercuryMinorUnits(r *big.Rat) string {
 	return strconv.FormatInt(mercuryRatHalfUpInt(r), 10)
+}
+
+// mercuryFormatAmount renders a signed amount as a plain decimal with the
+// currency's fraction digits (e.g. 10.00 -> "10.00", 0 -> ".00", 10.005 ->
+// "10.01"), matching the Mercury scheme sample's CAMTR/SURFEE and UT/UY
+// amounts. Unlike mercuryAmount it preserves the sign.
+func mercuryFormatAmount(v float64, mult *big.Rat) string {
+	scaled := new(big.Rat).Mul(decimalRat(v), mult)
+	return mercuryScaledDecimal(scaled, mercuryFractionDigits(mult))
+}
+
+// mercuryFractionDigits returns the number of fraction digits implied by a
+// power-of-ten multiplier (100 -> 2, 1 -> 0).
+func mercuryFractionDigits(mult *big.Rat) int {
+	if mult == nil || mult.Denom().Cmp(big.NewInt(1)) != 0 {
+		return 0
+	}
+	s := mult.Num().String()
+	if len(s) == 0 || s[0] != '1' {
+		return 0
+	}
+	for _, c := range s[1:] {
+		if c != '0' {
+			return 0
+		}
+	}
+	return len(s) - 1
+}
+
+// mercuryScaledDecimal renders a minor-unit-scaled amount as a plain decimal
+// with fd fraction digits, rounding half-up (BigDecimal semantics). Values with
+// a zero integer part drop the leading zero (".00" for zero), matching the
+// scheme sample.
+func mercuryScaledDecimal(r *big.Rat, fd int) string {
+	n := mercuryRatHalfUpBig(r)
+	neg := n.Sign() < 0
+	n.Abs(n)
+	digits := n.String()
+	if fd <= 0 {
+		if neg {
+			return "-" + digits
+		}
+		return digits
+	}
+	for len(digits) <= fd {
+		digits = "0" + digits
+	}
+	out := digits[:len(digits)-fd] + "." + digits[len(digits)-fd:]
+	if neg {
+		out = "-" + out
+	}
+	if strings.HasPrefix(out, "0.") {
+		out = out[1:]
+	}
+	return out
+}
+
+// mercuryRatHalfUpBig rounds a Rat to the nearest integer, half away from zero,
+// mirroring BigDecimal.setScale(0, RoundingMode.HALF_UP).
+func mercuryRatHalfUpBig(r *big.Rat) *big.Int {
+	num, den := r.Num(), r.Denom()
+	q := new(big.Int)
+	rem := new(big.Int)
+	q.QuoRem(num, den, rem)
+	rem.Abs(rem)
+	rem.Mul(rem, big.NewInt(2))
+	if rem.Cmp(den) >= 0 {
+		if num.Sign() < 0 {
+			q.Sub(q, big.NewInt(1))
+		} else {
+			q.Add(q, big.NewInt(1))
+		}
+	}
+	return q
 }
 
 // mercuryRatHalfUpInt rounds a Rat to the nearest integer, half up (rounds

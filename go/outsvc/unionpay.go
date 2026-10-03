@@ -139,6 +139,14 @@ func (s *OutgoingService) ProcessUnionPayOutgoing(ctx context.Context, insCode, 
 			return "Outgoing Failed"
 		}
 
+		fid := fileId
+		s.updateOutFilelog(ctx, insCode, outgoingLogSerialNumber, fileName, &fid)
+
+		// Insert the summary while the file rows are still gen_status=9 so the
+		// insertIntoOutgoingSummary grouping query finds them (see the Mercury
+		// port note: Java flipped rows 9->4 first, producing empty summaries).
+		s.insertUnionPayIntoOutgoingSummary(ctx, user, insCode, intCode, fileName, outgoingLogSerialNumber)
+
 		now := s.now()
 		for _, e := range fileTxns {
 			e.LastUpdated = now
@@ -150,9 +158,6 @@ func (s *OutgoingService) ProcessUnionPayOutgoing(ctx context.Context, insCode, 
 			logOutsvc("UpdateUnionPayWorkStatuses", err)
 			return "Failed"
 		}
-		fid := fileId
-		s.updateOutFilelog(ctx, insCode, outgoingLogSerialNumber, fileName, &fid)
-		s.insertUnionPayIntoOutgoingSummary(ctx, user, insCode, intCode, fileName, outgoingLogSerialNumber)
 	}
 
 	if err := s.store.CompleteUnionPayPosStatus(ctx, insCode); err != nil {
@@ -236,7 +241,7 @@ func (s *OutgoingService) insertUnionPayIntoOutgoingSummary(ctx context.Context,
 			OutFileDate:     dateOnly(now),
 			FileId:          fileName,
 			RefSerialNumber: outgoingLogSerialNumber,
-			MessageTypeId:   txnCode,
+			MessageTypeId:   summaryMessageType(txnCode),
 			FunctionCode:    "1",
 			ProcCode:        "",
 			Count:           totals.count,

@@ -12,8 +12,8 @@ func (s *oracleStore) CountUnionPayWorkBetween(ctx context.Context, ins, status 
 	var n int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM UP_ACQ_TXN_WORK
-		WHERE UPT_INS_CODE = :1 AND UPT_GEN_STATUS = :2 AND UPT_LOCAL_DATE_TIME BETWEEN :3 AND :4`,
-		ins, status, from, to).Scan(&n)
+		WHERE UPT_INS_CODE = :1 AND UPT_GEN_STATUS = :2 AND UPT_LOCAL_DATE_TIME BETWEEN TO_DATE(:3,'YYYY-MM-DD HH24:MI:SS') AND TO_DATE(:4,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, status, oraTime(from), oraTime(to)).Scan(&n)
 	return n, err
 }
 
@@ -21,8 +21,8 @@ func (s *oracleStore) CountUnionPayWorkLessThanEqual(ctx context.Context, ins, s
 	var n int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM UP_ACQ_TXN_WORK
-		WHERE UPT_INS_CODE = :1 AND UPT_GEN_STATUS = :2 AND UPT_LOCAL_DATE_TIME <= :3`,
-		ins, status, to).Scan(&n)
+		WHERE UPT_INS_CODE = :1 AND UPT_GEN_STATUS = :2 AND UPT_LOCAL_DATE_TIME <= TO_DATE(:3,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, status, oraTime(to)).Scan(&n)
 	return n, err
 }
 
@@ -30,8 +30,8 @@ func (s *oracleStore) FindUnionPayWorkBetween(ctx context.Context, ins, intCode,
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT * FROM UP_ACQ_TXN_WORK
 		WHERE UPT_INS_CODE = :1 AND UPT_INT_CODE = :2 AND UPT_GEN_STATUS = :3
-		  AND UPT_LOCAL_DATE_TIME BETWEEN :4 AND :5`,
-		ins, intCode, status, from, to)
+		  AND UPT_LOCAL_DATE_TIME BETWEEN TO_DATE(:4,'YYYY-MM-DD HH24:MI:SS') AND TO_DATE(:5,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, intCode, status, oraTime(from), oraTime(to))
 	if err != nil {
 		return nil, err
 	}
@@ -43,8 +43,8 @@ func (s *oracleStore) FindUnionPayWorkLessThanEqual(ctx context.Context, ins, in
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT * FROM UP_ACQ_TXN_WORK
 		WHERE UPT_INS_CODE = :1 AND UPT_INT_CODE = :2 AND UPT_GEN_STATUS = :3
-		  AND UPT_LOCAL_DATE_TIME <= :4`,
-		ins, intCode, status, to)
+		  AND UPT_LOCAL_DATE_TIME <= TO_DATE(:4,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, intCode, status, oraTime(to))
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +164,6 @@ func (s *oracleStore) CompleteUnionPayPosStatus(ctx context.Context, ins int) er
 		WHERE pos.PTR_RET_REF_NUMBER IN (
 		  SELECT upt.UPT_RET_REF_NUMBER FROM UP_ACQ_TXN_WORK upt WHERE upt.UPT_GEN_STATUS = 4
 		)
-		AND pos.PTR_NETWORK IN ('UNIONPAY')
 		AND pos.PTR_GEN_STATUS = 4
 		AND pos.PTR_INS_CODE = :1`, ins)
 	return err

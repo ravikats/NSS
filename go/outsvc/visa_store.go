@@ -14,8 +14,8 @@ func (s *oracleStore) CountVisaWorkBetween(ctx context.Context, ins, status int,
 	var n int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM VISA_ACQ_TXN_WORK
-		WHERE VTD_INS_CODE = :1 AND VTD_GEN_STATUS = :2 AND VTD_PURCHASE_DATE BETWEEN :3 AND :4`,
-		ins, status, from, to).Scan(&n)
+		WHERE VTD_INS_CODE = :1 AND VTD_GEN_STATUS = :2 AND VTD_PURCHASE_DATE BETWEEN TO_DATE(:3,'YYYY-MM-DD HH24:MI:SS') AND TO_DATE(:4,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, status, oraTime(from), oraTime(to)).Scan(&n)
 	return n, err
 }
 
@@ -23,8 +23,8 @@ func (s *oracleStore) CountVisaWorkLessThanEqual(ctx context.Context, ins, statu
 	var n int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM VISA_ACQ_TXN_WORK
-		WHERE VTD_INS_CODE = :1 AND VTD_GEN_STATUS = :2 AND VTD_PURCHASE_DATE <= :3`,
-		ins, status, to).Scan(&n)
+		WHERE VTD_INS_CODE = :1 AND VTD_GEN_STATUS = :2 AND VTD_PURCHASE_DATE <= TO_DATE(:3,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, status, oraTime(to)).Scan(&n)
 	return n, err
 }
 
@@ -32,8 +32,8 @@ func (s *oracleStore) FindVisaWorkBetween(ctx context.Context, ins, intCode, sta
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT * FROM VISA_ACQ_TXN_WORK
 		WHERE VTD_INS_CODE = :1 AND VTD_INT_CODE = :2 AND VTD_GEN_STATUS = :3
-		  AND VTD_PURCHASE_DATE BETWEEN :4 AND :5`,
-		ins, intCode, status, from, to)
+		  AND VTD_PURCHASE_DATE BETWEEN TO_DATE(:4,'YYYY-MM-DD HH24:MI:SS') AND TO_DATE(:5,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, intCode, status, oraTime(from), oraTime(to))
 	if err != nil {
 		return nil, err
 	}
@@ -45,8 +45,8 @@ func (s *oracleStore) FindVisaWorkLessThanEqual(ctx context.Context, ins, intCod
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT * FROM VISA_ACQ_TXN_WORK
 		WHERE VTD_INS_CODE = :1 AND VTD_INT_CODE = :2 AND VTD_GEN_STATUS = :3
-		  AND VTD_PURCHASE_DATE <= :4`,
-		ins, intCode, status, to)
+		  AND VTD_PURCHASE_DATE <= TO_DATE(:4,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, intCode, status, oraTime(to))
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +74,7 @@ func (s *oracleStore) FindVisaWorkFeeBetween(ctx context.Context, ins, intCode, 
 		  AND VTD_TXN_CODE IN (` + visaInClause(txnCode) + `)
 		  AND VTD_PURCHASE_DATE BETWEEN ` + fmt.Sprintf(":%d", len(txnCode)+1) + ` AND ` + fmt.Sprintf(":%d", len(txnCode)+2)
 	args := visaCodeArgs(ins, intCode, status, txnCode)
-	args = append(args, from, to)
+	args = append(args, oraTime(from), oraTime(to))
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -90,7 +90,7 @@ func (s *oracleStore) FindVisaWorkFeeLessThanEqual(ctx context.Context, ins, int
 		  AND VTD_TXN_CODE IN (` + visaInClause(txnCode) + `)
 		  AND VTD_PURCHASE_DATE <= ` + fmt.Sprintf(":%d", len(txnCode)+1)
 	args := visaCodeArgs(ins, intCode, status, txnCode)
-	args = append(args, to)
+	args = append(args, oraTime(to))
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -106,7 +106,7 @@ func (s *oracleStore) FindVisaWorkTxnBetween(ctx context.Context, ins, intCode, 
 		  AND VTD_TXN_CODE NOT IN (` + visaInClause(txnCode) + `)
 		  AND VTD_PURCHASE_DATE BETWEEN ` + fmt.Sprintf(":%d", len(txnCode)+1) + ` AND ` + fmt.Sprintf(":%d", len(txnCode)+2)
 	args := visaCodeArgs(ins, intCode, status, txnCode)
-	args = append(args, from, to)
+	args = append(args, oraTime(from), oraTime(to))
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -122,7 +122,7 @@ func (s *oracleStore) FindVisaWorkTxnLessThanEqual(ctx context.Context, ins, int
 		  AND VTD_TXN_CODE NOT IN (` + visaInClause(txnCode) + `)
 		  AND VTD_PURCHASE_DATE <= ` + fmt.Sprintf(":%d", len(txnCode)+1)
 	args := visaCodeArgs(ins, intCode, status, txnCode)
-	args = append(args, to)
+	args = append(args, oraTime(to))
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err

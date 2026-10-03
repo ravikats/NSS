@@ -14,8 +14,8 @@ func (s *oracleStore) CountJaywanWorkBetween(ctx context.Context, ins, status in
 	var n int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM JAYWAN_ACQ_TXN_WORK
-		WHERE JWN_INS_CODE = :1 AND JWN_GEN_STATUS = :2 AND JWN_LOCAL_DATE_TIME BETWEEN :3 AND :4`,
-		ins, status, from, to).Scan(&n)
+		WHERE JWN_INS_CODE = :1 AND JWN_GEN_STATUS = :2 AND JWN_LOCAL_DATE_TIME BETWEEN TO_DATE(:3,'YYYY-MM-DD HH24:MI:SS') AND TO_DATE(:4,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, status, oraTime(from), oraTime(to)).Scan(&n)
 	return n, err
 }
 
@@ -23,8 +23,8 @@ func (s *oracleStore) CountJaywanWorkLessThanEqual(ctx context.Context, ins, sta
 	var n int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM JAYWAN_ACQ_TXN_WORK
-		WHERE JWN_INS_CODE = :1 AND JWN_GEN_STATUS = :2 AND JWN_LOCAL_DATE_TIME <= :3`,
-		ins, status, to).Scan(&n)
+		WHERE JWN_INS_CODE = :1 AND JWN_GEN_STATUS = :2 AND JWN_LOCAL_DATE_TIME <= TO_DATE(:3,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, status, oraTime(to)).Scan(&n)
 	return n, err
 }
 
@@ -32,8 +32,8 @@ func (s *oracleStore) FindJaywanWorkBetween(ctx context.Context, ins, intCode, s
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT * FROM JAYWAN_ACQ_TXN_WORK
 		WHERE JWN_INS_CODE = :1 AND JWN_INT_CODE = :2 AND JWN_GEN_STATUS = :3
-		  AND JWN_LOCAL_DATE_TIME BETWEEN :4 AND :5`,
-		ins, intCode, status, from, to)
+		  AND JWN_LOCAL_DATE_TIME BETWEEN TO_DATE(:4,'YYYY-MM-DD HH24:MI:SS') AND TO_DATE(:5,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, intCode, status, oraTime(from), oraTime(to))
 	if err != nil {
 		return nil, err
 	}
@@ -45,8 +45,8 @@ func (s *oracleStore) FindJaywanWorkLessThanEqual(ctx context.Context, ins, intC
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT * FROM JAYWAN_ACQ_TXN_WORK
 		WHERE JWN_INS_CODE = :1 AND JWN_INT_CODE = :2 AND JWN_GEN_STATUS = :3
-		  AND JWN_LOCAL_DATE_TIME <= :4`,
-		ins, intCode, status, to)
+		  AND JWN_LOCAL_DATE_TIME <= TO_DATE(:4,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, intCode, status, oraTime(to))
 	if err != nil {
 		return nil, err
 	}
@@ -89,45 +89,6 @@ func bindJaywanWork(rows *sql.Rows) ([]*JaywanAcqTxnWorkEntity, error) {
 	out := make([]*JaywanAcqTxnWorkEntity, 0, len(maps))
 	for _, m := range maps {
 		e := &JaywanAcqTxnWorkEntity{}
-		bindRow(m, e)
-		out = append(out, e)
-	}
-	return out, nil
-}
-
-// FindJaywanNetworkDataByRef returns the JAYWAN_NETWORK_DATA rows matching the
-// given (prjSerNumber, txnRefNumbers). The Go Jaywan outgoing flow uses these to
-// source nTxnId/nPosTxnStat/nProcCd (fields absent from JAYWAN_ACQ_TXN_WORK).
-func (s *oracleStore) FindJaywanNetworkDataByRef(ctx context.Context, prjSerNumber int64, txnRefNumbers []int64) ([]*JaywanNetworkDataEntity, error) {
-	if len(txnRefNumbers) == 0 {
-		return nil, nil
-	}
-	ph := make([]string, len(txnRefNumbers))
-	args := make([]any, 0, len(txnRefNumbers)+1)
-	args = append(args, prjSerNumber)
-	for i, r := range txnRefNumbers {
-		ph[i] = fmt.Sprintf(":%d", i+2)
-		args = append(args, r)
-	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT * FROM JAYWAN_NETWORK_DATA
-		WHERE JND_PRJ_SER_NUMBER = :1 AND JND_TXN_REF_NUMBER IN (`+strings.Join(ph, ",")+`)`,
-		args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return bindJaywanNetworkData(rows)
-}
-
-func bindJaywanNetworkData(rows *sql.Rows) ([]*JaywanNetworkDataEntity, error) {
-	maps, err := rowsToMaps(rows)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]*JaywanNetworkDataEntity, 0, len(maps))
-	for _, m := range maps {
-		e := &JaywanNetworkDataEntity{}
 		bindRow(m, e)
 		out = append(out, e)
 	}

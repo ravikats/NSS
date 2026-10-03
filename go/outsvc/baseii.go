@@ -43,10 +43,11 @@ func fractionalDigits(currencyCode string) int {
 }
 
 // lpad/truncate helpers mirror commons-lang3 StringUtils:
-//   leftPad(s, n, c) - pad on left to width n; unchanged if longer
-//   rightPad(s, n, c) - pad on right to width n; unchanged if longer
-//   left(s, n)  - first n chars (or whole string)
-//   right(s, n) - last n chars (or whole string)
+//
+//	leftPad(s, n, c) - pad on left to width n; unchanged if longer
+//	rightPad(s, n, c) - pad on right to width n; unchanged if longer
+//	left(s, n)  - first n chars (or whole string)
+//	right(s, n) - last n chars (or whole string)
 func sleftPad(s string, n int, c string) string {
 	if len(s) >= n {
 		return s

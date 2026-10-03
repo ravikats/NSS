@@ -6,24 +6,142 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"empay/irf/ipm"
 )
 
 // IpmOutProcessor is the Go port of com.empay.IPMProcessing.IpmOutEbcidic: it
 // turns MC_ACQ_TXN_WORK rows (via VW_IPM_OUT_WORK) into a Mastercard IPM file.
 type IpmOutProcessor struct {
 	reconOutDir    string
+	ipmReportsDir  string
 	processingMode string
 	store          Store
 	crypto         CardCrypto
+
+	// onValidation, when set, receives the compliance outcome of every
+	// generated IPM file so the owning service can publish it (the inquiry UI
+	// reads it via GET /outgoing/v1/validations).
+	onValidation func(*ValidationResult)
+
+	// strict makes a validation failure abort generation instead of only
+	// being reported.
+	strict bool
+
+	// validator is created once and reused; it owns the embedded metadata.
+	validator *ipm.Validator
+}
+
+// SetStrict selects abort-on-validation-failure behaviour.
+func (p *IpmOutProcessor) SetStrict(v bool) { p.strict = v }
+
+// SetValidationHook installs the callback invoked with each file's validation
+// outcome.
+func (p *IpmOutProcessor) SetValidationHook(fn func(*ValidationResult)) {
+	p.onValidation = fn
+}
+
+// validateIPMFile parses and compliance-checks a generated IPM file. It
+// returns the total record count and the number of transaction records.
+// Also writes CSV and JSONL compliance reports to RECON_OUT_DIR/ipm_reports/.
+func (p *IpmOutProcessor) validateIPMFile(path string) (records, txns int, err error) {
+	if p.validator == nil {
+		v, verr := ipm.NewValidator()
+		if verr != nil {
+			return 0, 0, verr
+		}
+		p.validator = v
+	}
+
+	// Full validation with per-record results
+	results, fileViolations, rerr := p.validator.ValidateFile(path)
+	if rerr != nil {
+		return 0, 0, rerr
+	}
+
+	// Generate CSV/JSONL reports
+	if err := p.writeReports(path, results, fileViolations); err != nil {
+		// Non-fatal: log and continue
+		fmt.Fprintf(os.Stderr, "outsvc: write IPM reports: %v\n", err)
+	}
+
+	// Build summary report for existing logic
+	rep := &ipm.ValidationReport{
+		Records:        len(results),
+		FileViolations: fileViolations,
+	}
+	for _, r := range results {
+		rep.Errors += len(r.Errors)
+		rep.Violations += len(r.Violations)
+		for _, e := range r.Errors {
+			rep.Messages = append(rep.Messages,
+				fmt.Sprintf("record %d - %s", r.RecordNo, e))
+		}
+		for _, x := range r.Violations {
+			rep.Messages = append(rep.Messages, fmt.Sprintf(
+				"record %d - RRN %s - Acceptor ID %s: [%s] %s",
+				r.RecordNo, r.Fields[37], r.Fields[42], x.Severity, x.Message))
+		}
+	}
+	for _, x := range fileViolations {
+		rep.Violations++
+		rep.Messages = append(rep.Messages,
+			fmt.Sprintf("[%s] %s", x.Severity, x.Message))
+	}
+
+	if !rep.OK() {
+		return rep.Records, rep.Records - 2, fmt.Errorf("%s", strings.Join(rep.Messages, "; "))
+	}
+	return rep.Records, rep.Records - 2, nil
+}
+
+// writeReports generates CSV and JSONL compliance reports for an IPM file.
+// Uses p.ipmReportsDir if set; otherwise falls back to <ReconOutDir>/ipm_reports/.
+func (p *IpmOutProcessor) writeReports(path string, results []*ipm.RecordResult, fileViolations []ipm.Violation) error {
+	reportsDir := p.ipmReportsDir
+	if reportsDir == "" {
+		reportsDir = filepath.Join(p.reconOutDir, "ipm_reports")
+	}
+	if err := os.MkdirAll(reportsDir, 0o755); err != nil {
+		return err
+	}
+
+	base := filepath.Base(path)
+	// Keep the full filename including numeric extension (.001, .002, etc.)
+	// so reports don't overwrite each other across generations.
+	csvPath := filepath.Join(reportsDir, base+".csv")
+	jsonlPath := filepath.Join(reportsDir, base+".jsonl")
+
+	return ipm.WriteReports(results, fileViolations, csvPath, jsonlPath)
+}
+
+// ipmValidation adapts an IPM compliance outcome to the shared
+// ValidationResult shape used by the inquiry UI.
+func (p *IpmOutProcessor) ipmValidation(fileName string, records, txns int, err error) *ValidationResult {
+	res := &ValidationResult{
+		Network:     "MASTERCARD",
+		File:        fileName,
+		Records:     records,
+		TxnCount:    txns,
+		ValidatedAt: time.Now(),
+		OK:          err == nil,
+	}
+	if err != nil {
+		res.Errors = append(res.Errors, err.Error())
+	} else {
+		res.Summary = fmt.Sprintf("IPM compliance OK (%d records, %d transactions)", records, txns)
+	}
+	return res
 }
 
 // NewIpmOutProcessor wires the processor with its config and dependencies.
-func NewIpmOutProcessor(reconOutDir, processingMode string, store Store, crypto CardCrypto) *IpmOutProcessor {
-	return &IpmOutProcessor{reconOutDir: reconOutDir, processingMode: processingMode, store: store, crypto: crypto}
+func NewIpmOutProcessor(reconOutDir, ipmReportsDir, processingMode string, store Store, crypto CardCrypto) *IpmOutProcessor {
+	return &IpmOutProcessor{reconOutDir: reconOutDir, ipmReportsDir: ipmReportsDir, processingMode: processingMode, store: store, crypto: crypto}
 }
 
 func orEmpty(s *string) string {
@@ -101,7 +219,18 @@ func (p *IpmOutProcessor) IpmPro(ctx context.Context, fileName, processorId stri
 		dir += string(os.PathSeparator)
 	}
 
-	logf, err := os.Create(dir + fileName + ".log")
+	// Write .log to IPM reports directory (configurable via IPMReportsDir)
+	reportsDir := p.ipmReportsDir
+	fmt.Fprintf(os.Stderr, "outsvc: DEBUG ipmReportsDir=%q reconOutDir=%q\n", p.ipmReportsDir, p.reconOutDir)
+	if reportsDir == "" {
+		reportsDir = filepath.Join(p.reconOutDir, "ipm_reports")
+	}
+	fmt.Fprintf(os.Stderr, "outsvc: DEBUG using reportsDir=%q\n", reportsDir)
+	if err := os.MkdirAll(reportsDir, 0o755); err != nil {
+		logOutsvc("create reports dir", err)
+		return ""
+	}
+	logf, err := os.Create(filepath.Join(reportsDir, fileName+".log"))
 	if err != nil {
 		logOutsvc("create log", err)
 		return ""
@@ -181,6 +310,31 @@ func (p *IpmOutProcessor) IpmPro(ctx context.Context, fileName, processorId stri
 	if err := transformIPM(tmp, outNew); err != nil {
 		logOutsvc("transform IPM", err)
 		return ""
+	}
+
+	// Validate the finished IPM file before anything marks the rows as sent.
+	// In strict mode a failure aborts generation: the work rows go to 7 and the
+	// caller marks the file log as failed (5) by receiving an empty fileId.
+	// Otherwise the outcome is only reported (logged + published to the UI).
+	if fileType != "GCO" {
+		records, txns, verr := p.validateIPMFile(dir + fileName)
+		if p.onValidation != nil {
+			p.onValidation(p.ipmValidation(fileName, records, txns, verr))
+		}
+		if verr != nil {
+			logOutsvc("ValidateIPMFile", verr)
+			if p.strict {
+				if err := p.store.FailMcWorkByFileId(ctx, insCode, fileName); err != nil {
+					logOutsvc("FailMcWorkByFileId", err)
+				}
+				return ""
+			}
+			fmt.Fprintf(os.Stderr, "outsvc: ValidateIPMFile: %s: %d violations (not strict, file kept)\n",
+				fileName, records)
+		} else {
+			fmt.Fprintf(os.Stderr, "outsvc: ValidateIPMFile: %s: OK (%d records, %d txns)\n",
+				fileName, records, txns)
+		}
 	}
 
 	if err := p.buildAndSaveSummaries(ctx, insCode, intCode, businessDate, refSerNumber, userSerNumber, fileID, fileType); err != nil {
@@ -319,18 +473,26 @@ func (p *IpmOutProcessor) buildDetail(rs *IpmOutWorkEntity, decrypted map[string
 	de093 := rs.DE093
 	de094 := rs.DE094
 	de095 := rs.DE095
+	de105 := rs.DE105
 
 	if sMTI == "1740" {
 		de012, de022, de023, de026 = nil, nil, nil, nil
 		de030, de031, de032, de037, de038 = nil, nil, nil, nil, nil
 		de040, de041 = nil, nil
 		de048 = rs.PDS25 + jcatNull(rs.PDS137, rs.PDS148, rs.PDS165)
-		de054, de063 = nil, nil
+		de054, de063, de105 = nil, nil, nil
 	} else {
+		// PDS 0213 (merchant country of origin), PDS 0170 (acceptor contact),
+		// PDS 0018 and PDS 0175 belong to every 1240 detail record, not only to
+		// the chip-present shape. They used to be appended further down inside
+		// the "PDS165 does not end in C" branch, so a Mastercard row settling
+		// with indicator C lost all four and the file failed
+		// PDS0213_REQUIRED / PDS0170_REQUIRED.
 		de048 = jcatNull(rs.PDS23, ptrStr(rs.PDS25), ptrStr(rs.PDS52), rs.PDS148, ptrStr(rs.PDS149)) +
 			jcatEmpty(rs.PDS155) +
 			jcatNull(rs.PDS165) +
-			jcatEmpty(ptrStr(rs.PDS176), rs.PDS211, ptrStr(rs.PDS262))
+			jcatEmpty(ptrStr(rs.PDS176), rs.PDS211, ptrStr(rs.PDS262)) +
+			jcatEmpty(ptrStr(rs.DE048_PDS0213), ptrStr(rs.DE048_PDS0170), rs.PDS0018, rs.DE048_PDS0175)
 	}
 
 	var de055 *string
@@ -409,6 +571,19 @@ func (p *IpmOutProcessor) buildDetail(rs *IpmOutWorkEntity, decrypted map[string
 			return nil, "", err
 		}
 	}
+	// DE 105 carries SE 001 (Transaction Link ID) as "001" + length + TLID,
+	// assembled by the view from MCT_TLID. It is emitted as LLLVAR ASCII
+	// directly instead of through addIsoField: the ported type table lists
+	// DE 105 as fixed alpha with length 16 (Java has -2 there, whose
+	// substring(0, -2) would throw), and the fixed path would truncate
+	// "001022" + a 22-character TLID to 16 characters.
+	if de105 != nil && *de105 != "" {
+		msg := addFieldLLLVARAscii(strconv.Itoa(105), sb.String(), *de105)
+		sb.Reset()
+		sb.WriteString(msg)
+		createBitMap(104, &bm)
+	}
+
 	full := sb.String()
 	for i := len(ebcdic); i < len(full); i++ {
 		ebcdic = append(ebcdic, asciiToEbcdic(int(full[i])))
@@ -439,6 +614,17 @@ func optionalField(sb *strings.Builder, bm *[16]byte, idx int, v *string) error 
 }
 
 func ptrStr(s string) *string { return &s }
+
+func trunc8(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	if len(*s) > 8 {
+		v := (*s)[:8]
+		return &v
+	}
+	return s
+}
 
 func pad2Hex(n int) string {
 	h := strconv.FormatInt(int64(n), 16)
@@ -515,69 +701,70 @@ func (p *IpmOutProcessor) callIpmOutWorkEntity(ctx context.Context, insCode int,
 
 func mapViewToIpmOut(insCode int, fileName string, v *ViewIpmOutWorkEntity) *IpmOutWorkEntity {
 	e := &IpmOutWorkEntity{
-		InsCode:        insCode,
-		FileId:         fileName,
-		RefSerNumber:   v.SerialNo,
-		DE001:          v.De001,
-		DE002:          v.De002,
-		DE003:          v.De003,
-		DE004:          v.De004,
-		DE012:          v.De012,
-		DE014:          v.De014,
-		DE022:          v.De022,
-		DE023:          v.De023,
-		DE024:          v.De024,
-		DE025:          v.De025,
-		DE026:          v.De026,
-		DE030:          v.De030,
-		DE031:          v.De031,
-		DE032:          v.De033,
-		DE033:          v.De033,
-		DE037:          v.De037,
-		DE038:          v.De038,
-		DE040:          v.De040,
-		DE041:          v.De041,
-		DE042:          v.De042,
-		DE043:          v.De043,
-		DE049:          v.De049,
-		DE054:          v.De054,
-		DE063:          v.De063,
-		DE071:          v.De071,
-		DE072:          v.De072,
-		DE093:          v.De093,
-		DE094:          v.De033,
-		DE095:          v.De095,
-		PDS23:          v.De0480023Pds23,
-		PDS25:          orEmpty(v.De0480025),
-		PDS52:          orEmpty(v.De0480052),
-		PDS137:         v.De0480137,
-		PDS148:         v.De0480148,
-		PDS149:         orEmpty(v.De0480149),
-		PDS155:         v.De0480155,
-		PDS165:         v.De0480165,
-		PDS176:         orEmpty(v.De0480176),
-		PDS211:         v.De0480211,
-		PDS262:         orEmpty(v.De0480262),
-		DE055_9F26:     orEmpty(v.De0559f26),
-		DE055_9F27:     orEmpty(v.De0559f27),
-		DE055_9F10:     orEmpty(v.De0559f10),
-		DE055_9F37:     orEmpty(v.De0559f37),
-		DE055_9F36:     orEmpty(v.De0559f36),
-		DE055_95:       orEmpty(v.De05595),
-		DE055_9A:       orEmpty(v.De0559a),
-		DE055_9C:       orEmpty(v.De0559c),
-		DE055_9F02:     orEmpty(v.De0559f02),
-		DE055_5F2A:     orEmpty(v.De0555f2a),
-		DE055_82:       orEmpty(v.De05582),
-		DE055_9F1A:     orEmpty(v.De0559f1a),
-		DE055_9F03:     orEmpty(v.De0559f03),
-		DE048_PDS0213:  orEmpty(v.De048Pds0213),
-		DE055_84:       orEmpty(v.De05584),
-		DE055_9F33:     orEmpty(v.De0559f33),
-		DE055_9F34:     orEmpty(v.De0559f34),
-		DE048_PDS0170:  orEmpty(v.De0480170),
-		PDS0018:        v.De0480018,
-		DE048_PDS0175:  v.De0480175,
+		InsCode:       insCode,
+		FileId:        fileName,
+		RefSerNumber:  v.SerialNo,
+		DE001:         v.De001,
+		DE002:         v.De002,
+		DE003:         v.De003,
+		DE004:         v.De004,
+		DE012:         v.De012,
+		DE014:         v.De014,
+		DE022:         v.De022,
+		DE023:         v.De023,
+		DE024:         v.De024,
+		DE025:         v.De025,
+		DE026:         v.De026,
+		DE030:         v.De030,
+		DE031:         v.De031,
+		DE032:         v.De033,
+		DE033:         v.De033,
+		DE037:         v.De037,
+		DE038:         v.De038,
+		DE040:         v.De040,
+		DE041:         v.De041,
+		DE042:         v.De042,
+		DE043:         v.De043,
+		DE049:         v.De049,
+		DE054:         v.De054,
+		DE063:         v.De063,
+		DE071:         trunc8(v.De071),
+		DE072:         v.De072,
+		DE093:         v.De093,
+		DE094:         v.De033,
+		DE095:         v.De095,
+		DE105:         v.De105,
+		PDS23:         v.De0480023Pds23,
+		PDS25:         orEmpty(v.De0480025),
+		PDS52:         orEmpty(v.De0480052),
+		PDS137:        v.De0480137,
+		PDS148:        v.De0480148,
+		PDS149:        orEmpty(v.De0480149),
+		PDS155:        v.De0480155,
+		PDS165:        v.De0480165,
+		PDS176:        orEmpty(v.De0480176),
+		PDS211:        v.De0480211,
+		PDS262:        orEmpty(v.De0480262),
+		DE055_9F26:    orEmpty(v.De0559f26),
+		DE055_9F27:    orEmpty(v.De0559f27),
+		DE055_9F10:    orEmpty(v.De0559f10),
+		DE055_9F37:    orEmpty(v.De0559f37),
+		DE055_9F36:    orEmpty(v.De0559f36),
+		DE055_95:      orEmpty(v.De05595),
+		DE055_9A:      orEmpty(v.De0559a),
+		DE055_9C:      orEmpty(v.De0559c),
+		DE055_9F02:    orEmpty(v.De0559f02),
+		DE055_5F2A:    orEmpty(v.De0555f2a),
+		DE055_82:      orEmpty(v.De05582),
+		DE055_9F1A:    orEmpty(v.De0559f1a),
+		DE055_9F03:    orEmpty(v.De0559f03),
+		DE048_PDS0213: orEmpty(v.De048Pds0213),
+		DE055_84:      orEmpty(v.De05584),
+		DE055_9F33:    orEmpty(v.De0559f33),
+		DE055_9F34:    orEmpty(v.De0559f34),
+		DE048_PDS0170: orEmpty(v.De0480170),
+		PDS0018:       v.De0480018,
+		DE048_PDS0175: v.De0480175,
 	}
 	return e
 }

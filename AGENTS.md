@@ -1,5 +1,9 @@
 # AGENTS.md
 
+## Working style
+Do not report changes elaborately. Focus on actual work (tool calls, code,
+fixes) and keep narrative output to a minimum unless the user asks for detail.
+
 ## Go module layout
 The Go code lives under `go/` (module `empay/irf`, go.mod at `go/go.mod`).
 The system Go (`/usr/bin/go`) is go1.18 and cannot build this module. Use the
@@ -492,3 +496,56 @@ go/
 - File size limit: 3250 TCR records per batch (triggers footer 91) for Visa
 - IPM record padding: 1012-byte blocks with 2-byte null insertion
 - Encryption chunk size: 16 entries per CryptAPI request
+
+## Jaywan outgoing: IRF1 full-fidelity mapper restored (2026-10-01) — DECIDE LATER
+`go/outsvc/jaywan{,_xml,_store,_entity}.go` are now the verbatim IRF1 port (all Txn
+tags, Java declaration order), replacing IRF's reduced 26-tag V1.3 mapper that
+joined `JAYWAN_NETWORK_DATA` for `nTxnId`/`nPosTxnStat`/`nProcCd`. `padRight` was
+moved to `amex.go` (its only remaining user). The IRF-only `jaywanout_test.go`
+(asserted byte-equality with `jaywan.xml`) and `JaywanNetworkDataEntity` +
+`FindJaywanNetworkDataByRef` were removed. NOTE: the restored mapper emits tags the
+rework had dropped (nAddData, nAmtBil, nAmtSet, nARD, nCcyCdBil, nCcyCdSet,
+nConvRtBil, nConvRtSet, nDtSet, nIntrnTrackNum, nLtPrsntInd, nProcSts, nRecrPymtCd,
+nRejRsnCd, nSetDCInd, nTxnDesInstCd, nUnFlNm) — decide later whether to trim back.
+
+## AMEX outgoing wired end-to-end + two port fixes (2026-10-02)
+AMEX was NOT a stub in `go/outsvc` (that comment was stale); `ProcessAmexOutgoing`
+was already implemented and the deployed binary contained it. It only looked dead
+because of missing config and two port bugs. To enable AMEX outgoing:
+
+- **UI**: added `'AMEX'` to `NETWORKS` in
+  `switch/inquiry-service/ui/src/pages/settlement/Outgoing.tsx` (dropdown now
+  MASTERCARD, VISA, AMEX, JAYWAN, MERCURY). Rebuilt dist in
+  `/tmp/opencode/inquiry-ui-build` (`npm run build`; cannot build on the FAT32
+  workspace) and copied to workspace `ui/dist` + `/App/ui/dist`. inquiry-service
+  serves `/App/ui/dist` (`INQUIRY_UI_DIST`), so no Go rebuild needed.
+- **Config**: `/App/outgoing-service/outgoing-service.env` gained
+  `AMEX_SYSTEM_CODE=121` (unset -> 0 -> `FindFileFormatBySystemCodeAndType(0,"O")`
+  = nil -> `forCode=0` -> `OUT_FILE_LOG.OFL_FOR_CODE` FK violation ORA-02291).
+- **DB seed** `IRF/replica/amex_staging_setup.sql` (idempotent): `FILE_FORMATS`
+  row system 121 type 'O' (FOR_CODE is GENERATED ALWAYS identity — do NOT insert
+  it; FOR_LAST_UPDATED is NOT NULL), and `ACQUIRER_BINS` bin_type 'A'
+  (`ACQ_BIN='970964'`, fabricated; `ACQ_LAST_UPDATED` NOT NULL). AMEX interface
+  INT_CODE=16 and AMEX_ACQ_TXN_WORK/DATA already existed.
+- **Port fixes** (`go/outsvc`):
+  1. `amex_store.go InsertAmexData`: placeholder count was `mercuryInsertValues(62)`
+     but `amexColumns`/`amexDataArgs` are 57 -> ORA-01008 on the work->data move,
+     which the Go flow then swallowed and still deleted the work rows (data loss).
+     Fixed to 57.
+  2. `amex.go amexFileName`: produced `VAPAY000001_...`; Java/spec name is
+     `AMEX_FSF_VAPAY000001_{yyyyMMdd}_{seq:02d}` (Java literal in
+     `AmexOutgoingServiceImpl`), so prefixed `AMEX_FSF_`.
+- **Verified** (temp instance on :19032 with the new binary + env, separate
+  output dir): AMEX FSF file `AMEX_FSF_VAPAY000001_20261002_03` written (TFH/TAB/
+  TAA/TBT/TFS, PAN decrypted 4104999999999998), OUT_FILE_LOG row forCode 22
+  intCode 16 status 4, WORK 0, AMEX_ACQ_TXN_DATA rows archived gen_status 4.
+  No test currently covers `InsertAmexData`/`amexFileName` against a full file
+  round-trip.
+- **Deploy**: new binary `/tmp/opencode/outgoing-service` (md5
+  `2a0aad09332f1488d0a9e578aa0b5221`) written over
+  `/App/outgoing-service/outgoing-service` (ravi-owned, world-writable dir).
+  **The running service is root-owned (PID started by start_all_services.sh step
+  7b) and cannot be signalled without sudo — the USER must restart it** (e.g.
+  `sudo /App/start_all_services.sh restart outgoing`, or stop+start) so the new
+  binary and `AMEX_SYSTEM_CODE` take effect. Until then the old process keeps the
+  old inode/env.

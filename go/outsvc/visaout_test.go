@@ -218,8 +218,8 @@ func newVisaFakeStore() *visaFakeStore {
 		interfaces: &InterfacesEntity{InterfaceCode: 8},
 		format:     &FileFormatsEntity{Code: 9},
 		businessDate: &BusinessDateEntity{
-			InstitutionCode: 1,
-			BusinessDate:    d,
+			InstitutionCode:  1,
+			BusinessDate:     d,
 			LastBusinessDate: d.Add(-24 * time.Hour),
 		},
 	}

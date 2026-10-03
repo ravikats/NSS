@@ -27,6 +27,7 @@ type mercuryFakeStore struct {
 	statusUpd  map[int64]int
 	fileIDUpd  map[int64]string
 	userUpd    map[int64]int
+	posUpdated []*PosTransactionEntity
 }
 
 func (f *mercuryFakeStore) FindFileFormatBySystemCodeAndType(ctx context.Context, sysCode int, typ string) (*FileFormatsEntity, error) {
@@ -226,6 +227,7 @@ func TestMercuryFileBuilderMatchesJava(t *testing.T) {
 		UpdatedUser:       4,
 		ReconOutDir:       dir,
 		CurrencyCodeKafka: "AED000",
+		MercuryMemberId:   "24013923",
 	}, st, &fakeCrypto{dec: map[string]string{"tok1": "6690109700100010"}})
 	frozen := time.Date(2026, 8, 3, 13, 37, 57, 0, time.UTC)
 	s.now = func() time.Time { return frozen }
@@ -237,72 +239,73 @@ func TestMercuryFileBuilderMatchesJava(t *testing.T) {
 		t.Fatalf("ProcessMercuryOutgoing = %q, want Success", got)
 	}
 
-	outPath := filepath.Join(dir, "EIF_03082026.010")
+	outPath := filepath.Join(dir, "Documents.2401392320260803")
 	gotBytes, err := os.ReadFile(outPath)
 	if err != nil {
 		t.Fatalf("output file missing: %v", err)
 	}
 	lines := strings.Split(strings.TrimRight(string(gotBytes), "\n"), "\n")
 
-	if lines[0] != "FRRC>UX>RK>970962>MP>AED>030826" {
+	if lines[0] != "FRRC>UX>RK>010>MP>AED>030826" {
 		t.Errorf("header line = %q", lines[0])
 	}
-	if lines[1] != "FRRC>UH>RK>970962>MP>001>030826" {
+	if lines[1] != "FRRC>UH>RK>010>MP>001>030826" {
 		t.Errorf("batch header line = %q", lines[1])
 	}
 
-	// t1 (debit AA): XD with decrypted PAN and amount in minor units
-	// (10.00 -> "1000"), per the reconciled reference file's CAMTR format.
+	// t1 (debit AA): XD with decrypted PAN and amount as a plain decimal
+	// (10.00 -> "10.00"), per the scheme sample's CAMTR format.
 	xd1 := lines[2]
-	if !strings.HasPrefix(xd1, "FRRC>XD>RK>970962>MP>001>001>") {
+	if !strings.HasPrefix(xd1, "FRRC>XD>RK>010>MP>001>001>") {
 		t.Fatalf("XD1 = %q", xd1)
 	}
 	xd1Fields := strings.Split(xd1, ">")
 	if xd1Fields[7] != "6690109700100010" {
 		t.Errorf("XD1 PAN = %q", xd1Fields[7])
 	}
-	if xd1Fields[8] != "1000" {
-		t.Errorf("XD1 amount = %q, want 1000 (minor units)", xd1Fields[8])
+	if xd1Fields[8] != "10.00" {
+		t.Errorf("XD1 amount = %q, want 10.00 (decimal)", xd1Fields[8])
 	}
 	if xd1Fields[9] != "260803" {
 		t.Errorf("XD1 date = %q, want 260803 (yyMMdd)", xd1Fields[9])
 	}
-	// No surcharge -> field 45 SURFEE is "0" in minor units.
-	if xd1Fields[45] != "0" {
-		t.Errorf("XD1 surcharge = %q, want 0", xd1Fields[45])
+	// No surcharge -> field 45 SURFEE is empty (sample omits zero surcharges).
+	if xd1Fields[45] != "" {
+		t.Errorf("XD1 surcharge = %q, want empty", xd1Fields[45])
 	}
-	// AURCDE (field 54) carries the response code.
-	if xd1Fields[54] != "00" {
-		t.Errorf("XD1 field 54 (AURCDE) = %q, want 00", xd1Fields[54])
+	// AURCDE (field 54) must stay empty; the response code has no home in the
+	// XD record (the scheme sample leaves it blank).
+	if xd1Fields[54] != "" {
+		t.Errorf("XD1 field 54 (AURCDE) = %q, want empty", xd1Fields[54])
 	}
 
 	// t2 (credit TF with surcharge): XD + XM (pos entry 051).
 	xd2 := lines[3]
-	if !strings.HasPrefix(xd2, "FRRC>XD>RK>970962>MP>001>002>") {
+	if !strings.HasPrefix(xd2, "FRRC>XD>RK>010>MP>001>002>") {
 		t.Fatalf("XD2 = %q", xd2)
 	}
 	xd2Fields := strings.Split(xd2, ">")
-	if xd2Fields[8] != "95100" {
-		t.Errorf("XD2 amount = %q, want 95100", xd2Fields[8])
+	if xd2Fields[8] != "951.00" {
+		t.Errorf("XD2 amount = %q, want 951.00", xd2Fields[8])
 	}
-	if xd2Fields[45] != "100" {
-		t.Errorf("XD2 surcharge = %q, want 100 (field 45)", xd2Fields[45])
+	if xd2Fields[45] != "1.00" {
+		t.Errorf("XD2 surcharge = %q, want 1.00 (field 45)", xd2Fields[45])
 	}
 	// XM record follows XD2 (index 4).
-	if !strings.HasPrefix(lines[4], "FRRC>XM>RK>970962>MP>001>002>") {
+	if !strings.HasPrefix(lines[4], "FRRC>XM>RK>010>MP>001>002>") {
 		t.Fatalf("XM = %q", lines[4])
 	}
 
 	// t3 (charge type 830, pos entry 951): XD + XM + XC.
 	xd3 := lines[5]
-	if !strings.HasPrefix(xd3, "FRRC>XD>RK>970962>MP>001>003>") {
+	if !strings.HasPrefix(xd3, "FRRC>XD>RK>010>MP>001>003>") {
 		t.Fatalf("XD3 = %q", xd3)
 	}
-	if !strings.HasPrefix(lines[6], "FRRC>XM>RK>970962>MP>001>003>") {
+	if !strings.HasPrefix(lines[6], "FRRC>XM>RK>010>MP>001>003>") {
 		t.Fatalf("XM3 = %q", lines[6])
 	}
 	xc3 := lines[7]
-	if !strings.HasPrefix(xc3, "FRRC>XC>RK>970962>MP>001>003>") {
+	if !strings.HasPrefix(xc3, "FRRC>XC>RK>010>MP>001>003>") {
 		t.Fatalf("XC3 = %q", xc3)
 	}
 	// XC terminal id must be the raw terminal id (13th field).
@@ -311,15 +314,15 @@ func TestMercuryFileBuilderMatchesJava(t *testing.T) {
 		t.Errorf("XC3 terminal id = %q, want T0000005", xc3Fields[12])
 	}
 
-	// Trailer: UT (1 credit 95100, 2 debits 1000+10000) then UY with
+	// Trailer: UT (1 credit 951.00, 2 debits 10.00+100.00) then UY with
 	// net = credit - debit. Surcharges are excluded from these totals (the
-	// Java builder only sums txnAmount). Amounts are minor units.
+	// Java builder only sums txnAmount). Amounts are plain decimals.
 	ut := lines[8]
-	if ut != "FRRC>UT>RK>970962>MP>001>1>95100>2>11000" {
+	if ut != "FRRC>UT>RK>010>MP>001>1>951.00>2>110.00" {
 		t.Errorf("UT = %q", ut)
 	}
 	uy := lines[9]
-	if uy != "FRRC>UY>RK>970962>MP>1>95100>2>11000>01.000>84100>>>>>>" {
+	if uy != "FRRC>UY>RK>010>MP>1>951.00>2>110.00>01.000>841.00>>>>>>" {
 		t.Errorf("UY = %q", uy)
 	}
 
@@ -332,11 +335,19 @@ func TestMercuryFileBuilderMatchesJava(t *testing.T) {
 	if len(st.data) != 3 {
 		t.Errorf("moved data rows = %d, want 3", len(st.data))
 	}
-	// Java insertIntoOutgoingSummary groups gen_status=9 rows, but those rows
-	// were just marked 4 for this file, so a single-file run produces no
-	// summary rows (a faithful port preserves this quirk).
-	if len(st.summaries) != 0 {
-		t.Errorf("summaries = %d, want 0 (single-file run; Java groups status-9 rows)", len(st.summaries))
+	// The summary is inserted while the file rows are still gen_status=9 (the
+	// fixed ordering; Java flipped rows 9->4 first and produced empty
+	// summaries). All 3 rows share TxnType "1240" so one group results.
+	if len(st.summaries) != 1 {
+		t.Fatalf("summaries = %d, want 1", len(st.summaries))
+	}
+	sm := st.summaries[0]
+	if sm.MessageTypeId != "1240" || sm.Count != 3 || sm.Amount != 1061.00 ||
+		sm.SurchargeAmount != 1.00 || sm.NetAmount != 1062.00 || sm.FunctionCode != "1" {
+		t.Errorf("summary = %+v", sm)
+	}
+	if sm.FileId != "Documents.2401392320260803" {
+		t.Errorf("summary file id = %q, want Documents.2401392320260803", sm.FileId)
 	}
 
 	var fileLog *OutGoingFileProcessingEntity
@@ -351,7 +362,7 @@ func TestMercuryFileBuilderMatchesJava(t *testing.T) {
 	if fileLog.GeneratedStatus != 4 {
 		t.Errorf("file log status = %d, want 4", fileLog.GeneratedStatus)
 	}
-	if fileLog.FileId == nil || *fileLog.FileId != "EIF_03082026.010" {
+	if fileLog.FileId == nil || *fileLog.FileId != "Documents.2401392320260803" {
 		t.Errorf("file log file id = %v", fileLog.FileId)
 	}
 }
@@ -379,6 +390,7 @@ func TestMercuryBatchFlipAt60(t *testing.T) {
 		UpdatedUser:       4,
 		ReconOutDir:       dir,
 		CurrencyCodeKafka: "AED000",
+		MercuryMemberId:   "24013923",
 	}, st, &fakeCrypto{dec: map[string]string{"tok1": "6690109700100010"}})
 	s.now = func() time.Time { return time.Date(2026, 8, 3, 13, 37, 57, 0, time.UTC) }
 
@@ -388,7 +400,7 @@ func TestMercuryBatchFlipAt60(t *testing.T) {
 		t.Fatalf("ProcessMercuryOutgoing = %q, want Success", got)
 	}
 
-	gotBytes, err := os.ReadFile(filepath.Join(dir, "EIF_03082026.010"))
+	gotBytes, err := os.ReadFile(filepath.Join(dir, "Documents.2401392320260803"))
 	if err != nil {
 		t.Fatalf("output file missing: %v", err)
 	}
@@ -407,15 +419,15 @@ func TestMercuryBatchFlipAt60(t *testing.T) {
 	if len(uh) != 2 {
 		t.Fatalf("batch headers = %d, want 2", len(uh))
 	}
-	if !strings.HasPrefix(uh[1], "FRRC>UH>RK>970962>MP>002>") {
+	if !strings.HasPrefix(uh[1], "FRRC>UH>RK>010>MP>002>") {
 		t.Errorf("second batch header = %q", uh[1])
 	}
 	if len(ut) != 2 {
 		t.Fatalf("batch trailers = %d, want 2", len(ut))
 	}
-	// Second UT should report the single batch-2 txn (61.00 -> 6100 minor
-	// units); the zero credit amount renders "0".
-	if ut[1] != "FRRC>UT>RK>970962>MP>002>0>0>1>6100" {
+	// Second UT should report the single batch-2 txn (61.00 as a decimal); the
+	// zero credit amount renders ".00" per the scheme sample.
+	if ut[1] != "FRRC>UT>RK>010>MP>002>0>.00>1>61.00" {
 		t.Errorf("second UT = %q", ut[1])
 	}
 	_ = work
@@ -450,8 +462,8 @@ func TestMercuryDecryptFailure(t *testing.T) {
 
 // TestMercuryHelpers exercises the numeric formatting helpers used by the EIF
 // builder for the AED (2 fraction digits) multiplier of 100. Amounts follow the
-// reconciled reference file: CAMTR/UT/UY and XM CAMTA/CAMTO in minor units
-// (value*100).
+// scheme sample: CAMTR/UT/UY as decimals, XM CAMTA/CAMTO as 12-digit minor
+// units (value*100).
 func TestMercuryHelpers(t *testing.T) {
 	mult := big.NewRat(100, 1)
 	cases := []struct {
@@ -459,11 +471,10 @@ func TestMercuryHelpers(t *testing.T) {
 		got  string
 		want string
 	}{
-		{"minor 10", mercuryMinorUnits(mercuryAmount(10.00, mult)), "1000"},
-		{"minor 951", mercuryMinorUnits(mercuryAmount(951.00, mult)), "95100"},
-		{"minor zero", mercuryMinorUnits(mercuryAmount(0, mult)), "0"},
-		{"minor half-up", mercuryMinorUnits(mercuryAmount(10.005, mult)), "1001"},
-		{"minor abs neg", mercuryMinorUnits(mercuryAmount(-2.5, mult)), "250"},
+		{"amount 10", mercuryFormatAmount(10.00, mult), "10.00"},
+		{"amount 951", mercuryFormatAmount(951.00, mult), "951.00"},
+		{"amount zero", mercuryFormatAmount(0, mult), ".00"},
+		{"amount half-up", mercuryFormatAmount(10.005, mult), "10.01"},
 		{"amount12 10", mercuryAmount12(10.00, mult), "000000001000"},
 		{"amount12 1.5", mercuryAmount12(1.50, mult), "000000000150"},
 		{"amount12 14.5", mercuryAmount12(14.50, mult), "000000001450"},
@@ -477,6 +488,7 @@ func TestMercuryHelpers(t *testing.T) {
 		{"trimTo empty", mercuryTrimTo("", 6), ""},
 		{"date", mercuryDate(timePtr(2026, 8, 3, 16, 4, 59)), "260803"},
 		{"localTime", mercuryLocalTime(timePtr(2026, 8, 3, 16, 4, 59)), "160459"},
+		{"neg half-up", mercuryFormatAmount(-2.5, mult), "-2.50"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {

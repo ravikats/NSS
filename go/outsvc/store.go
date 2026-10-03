@@ -34,6 +34,7 @@ type Store interface {
 	FindMcWorkLessThanEqual(ctx context.Context, ins, status int, to time.Time) ([]*McAcqTxnWorkEntity, error)
 	FindMcWorkByStatus(ctx context.Context, ins, status int) ([]*McAcqTxnWorkEntity, error)
 	UpdateMcWorkStatuses(ctx context.Context, ents []*McAcqTxnWorkEntity) error
+	FailMcWorkByFileId(ctx context.Context, ins int, fileId string) error
 	DeleteMcWork(ctx context.Context, ents []*McAcqTxnWorkEntity) error
 
 	FindViewIpmOutWorkAll(ctx context.Context) ([]*ViewIpmOutWorkEntity, error)
@@ -76,7 +77,6 @@ type Store interface {
 	FindJaywanWorkLessThanEqual(ctx context.Context, ins, intCode, status int, to time.Time) ([]*JaywanAcqTxnWorkEntity, error)
 	FindJaywanWorkByIntAndStatus(ctx context.Context, ins, intCode, status int) ([]*JaywanAcqTxnWorkEntity, error)
 	FindJaywanWorkByRrn(ctx context.Context, rrn string) ([]*JaywanAcqTxnWorkEntity, error)
-	FindJaywanNetworkDataByRef(ctx context.Context, prjSerNumber int64, txnRefNumbers []int64) ([]*JaywanNetworkDataEntity, error)
 	UpdateJaywanWorkStatuses(ctx context.Context, ents []*JaywanAcqTxnWorkEntity) error
 	DeleteJaywanWork(ctx context.Context, ents []*JaywanAcqTxnWorkEntity) error
 	InsertJaywanData(ctx context.Context, ents []*JaywanAcqTxnDataEntity) error
@@ -94,6 +94,9 @@ type Store interface {
 	DeleteMercuryWork(ctx context.Context, ents []*MercuryAcqTxnWorkEntity) error
 	InsertMercuryData(ctx context.Context, ents []*MercuryAcqTxnDataEntity) error
 	CompleteMercuryPosStatus(ctx context.Context, ins int) error
+	FindMercuryDataByFileId(ctx context.Context, ins int, fileId string) ([]*MercuryAcqTxnDataEntity, error)
+	InsertMercuryWork(ctx context.Context, ents []*MercuryAcqTxnWorkEntity) error
+	DeleteMercuryData(ctx context.Context, ents []*MercuryAcqTxnDataEntity) error
 
 	CountUnionPayWorkBetween(ctx context.Context, ins, status int, from, to time.Time) (int, error)
 	CountUnionPayWorkLessThanEqual(ctx context.Context, ins, status int, to time.Time) (int, error)
@@ -104,6 +107,16 @@ type Store interface {
 	DeleteUnionPayWork(ctx context.Context, ents []*UnionPayAcqTxnWorkEntity) error
 	InsertUnionPayData(ctx context.Context, ents []*UnionPayAcqTxnDataEntity) error
 	CompleteUnionPayPosStatus(ctx context.Context, ins int) error
+
+	CountAmexWorkBetween(ctx context.Context, ins, status int, from, to time.Time) (int, error)
+	CountAmexWorkLessThanEqual(ctx context.Context, ins, status int, to time.Time) (int, error)
+	FindAmexWorkBetween(ctx context.Context, ins, intCode, status int, from, to time.Time) ([]*AmexAcqTxnWorkEntity, error)
+	FindAmexWorkLessThanEqual(ctx context.Context, ins, intCode, status int, to time.Time) ([]*AmexAcqTxnWorkEntity, error)
+	FindAmexWorkByStatus(ctx context.Context, ins, status int) ([]*AmexAcqTxnWorkEntity, error)
+	UpdateAmexWorkStatuses(ctx context.Context, ents []*AmexAcqTxnWorkEntity) error
+	DeleteAmexWork(ctx context.Context, ents []*AmexAcqTxnWorkEntity) error
+	InsertAmexData(ctx context.Context, ents []*AmexAcqTxnDataEntity) error
+	CompleteAmexPosStatus(ctx context.Context, ins int) error
 
 	FindPosBySerNumbers(ctx context.Context, ser []int64) ([]*PosTransactionEntity, error)
 	UpdatePosStatuses(ctx context.Context, ents []*PosTransactionEntity) error
@@ -259,6 +272,20 @@ func bindRow(m map[string]any, dst any) {
 			}
 		}
 	}
+}
+
+// oraTime renders a Go time as the literal Oracle parses in the
+// TO_DATE(:n,'YYYY-MM-DD HH24:MI:SS') wrappers on every work-table date range.
+//
+// Binding a time.Time straight into a DATE comparison is unreliable with
+// go-ora: the driver sends it in a form Oracle resolves with the session zone
+// applied, so `local_date_time >= :from` matched NOTHING while
+// `local_date_time <= :to` matched everything. With from/to supplied (which is
+// what the UI always sends) getTxnCount therefore returned 0 and reported
+// "There are no transactions to stage!", and a window with no lower bound
+// silently produced a zero-record file.
+func oraTime(t time.Time) string {
+	return t.Format("2006-01-02 15:04:05")
 }
 
 // nullStr maps an empty string to NULL (Java null semantics), else the value.
@@ -534,8 +561,8 @@ func (s *oracleStore) CountMcWorkBetween(ctx context.Context, ins, status int, f
 	var n int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM MC_ACQ_TXN_WORK
-		WHERE MCT_INS_CODE = :1 AND MCT_GEN_STATUS = :2 AND MCT_LOCAL_DATE_TIME BETWEEN :3 AND :4`,
-		ins, status, from, to).Scan(&n)
+		WHERE MCT_INS_CODE = :1 AND MCT_GEN_STATUS = :2 AND MCT_LOCAL_DATE_TIME BETWEEN TO_DATE(:3,'YYYY-MM-DD HH24:MI:SS') AND TO_DATE(:4,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, status, oraTime(from), oraTime(to)).Scan(&n)
 	return n, err
 }
 
@@ -543,16 +570,16 @@ func (s *oracleStore) CountMcWorkLessThanEqual(ctx context.Context, ins, status 
 	var n int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM MC_ACQ_TXN_WORK
-		WHERE MCT_INS_CODE = :1 AND MCT_GEN_STATUS = :2 AND MCT_LOCAL_DATE_TIME <= :3`,
-		ins, status, to).Scan(&n)
+		WHERE MCT_INS_CODE = :1 AND MCT_GEN_STATUS = :2 AND MCT_LOCAL_DATE_TIME <= TO_DATE(:3,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, status, oraTime(to)).Scan(&n)
 	return n, err
 }
 
 func (s *oracleStore) FindMcWorkBetween(ctx context.Context, ins, status int, from, to time.Time) ([]*McAcqTxnWorkEntity, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT * FROM MC_ACQ_TXN_WORK
-		WHERE MCT_INS_CODE = :1 AND MCT_GEN_STATUS = :2 AND MCT_LOCAL_DATE_TIME BETWEEN :3 AND :4`,
-		ins, status, from, to)
+		WHERE MCT_INS_CODE = :1 AND MCT_GEN_STATUS = :2 AND MCT_LOCAL_DATE_TIME BETWEEN TO_DATE(:3,'YYYY-MM-DD HH24:MI:SS') AND TO_DATE(:4,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, status, oraTime(from), oraTime(to))
 	if err != nil {
 		return nil, err
 	}
@@ -563,8 +590,8 @@ func (s *oracleStore) FindMcWorkBetween(ctx context.Context, ins, status int, fr
 func (s *oracleStore) FindMcWorkLessThanEqual(ctx context.Context, ins, status int, to time.Time) ([]*McAcqTxnWorkEntity, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT * FROM MC_ACQ_TXN_WORK
-		WHERE MCT_INS_CODE = :1 AND MCT_GEN_STATUS = :2 AND MCT_LOCAL_DATE_TIME <= :3`,
-		ins, status, to)
+		WHERE MCT_INS_CODE = :1 AND MCT_GEN_STATUS = :2 AND MCT_LOCAL_DATE_TIME <= TO_DATE(:3,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, status, oraTime(to))
 	if err != nil {
 		return nil, err
 	}
@@ -620,6 +647,20 @@ func (s *oracleStore) DeleteMcWork(ctx context.Context, ents []*McAcqTxnWorkEnti
 	return nil
 }
 
+// FailMcWorkByFileId marks the still-in-flight (gen_status 9) MC work rows of
+// one file as failed (7). Used when the generated IPM file fails validation:
+// the rows must not be archived as if they had been sent to the network.
+func (s *oracleStore) FailMcWorkByFileId(ctx context.Context, ins int, fileId string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE MC_ACQ_TXN_WORK
+		   SET MCT_GEN_STATUS = 7,
+		       MCT_LAST_UPDATED = SYSDATE
+		 WHERE MCT_INS_CODE = :1
+		   AND MCT_FILE_ID = :2
+		   AND MCT_GEN_STATUS = 9`, ins, fileId)
+	return err
+}
+
 // ---- VW_IPM_OUT_WORK / IPM_OUT_WORK / OUTGOING_REPORT_DATA_WORK ----
 
 func (s *oracleStore) FindViewIpmOutWorkAll(ctx context.Context) ([]*ViewIpmOutWorkEntity, error) {
@@ -648,7 +689,7 @@ func (s *oracleStore) InsertIpmOutWork(ctx context.Context, ents []*IpmOutWorkEn
 		  IOW_DE004, IOW_DE012, IOW_DE014, IOW_DE022, IOW_DE023, IOW_DE024, IOW_DE025,
 		  IOW_DE026, IOW_DE030, IOW_DE031, IOW_DE032, IOW_DE033, IOW_DE037, IOW_DE038,
 		  IOW_DE040, IOW_DE041, IOW_DE042, IOW_DE043, IOW_DE049, IOW_DE054, IOW_DE063,
-		  IOW_DE071, IOW_DE072, IOW_DE093, IOW_DE094, IOW_DE095, IOW_PDS23, IOW_PDS25,
+		  IOW_DE071, IOW_DE072, IOW_DE093, IOW_DE094, IOW_DE095, IOW_DE105, IOW_PDS23, IOW_PDS25,
 		  IOW_PDS52, IOW_PDS137, IOW_PDS148, IOW_PDS149, IOW_PDS155, IOW_PDS165, IOW_PDS176,
 		  IOW_PDS211, IOW_PDS262, IOW_DE055_9F26, IOW_DE055_9F27, IOW_DE055_9F10,
 		  IOW_DE055_9F37, IOW_DE055_9F36, IOW_DE055_95, IOW_DE055_9A, IOW_DE055_9C,
@@ -658,7 +699,7 @@ func (s *oracleStore) InsertIpmOutWork(ctx context.Context, ents []*IpmOutWorkEn
 		VALUES (:1,:2,:3,:4,:5,:6,:7,:8,:9,:10,:11,:12,:13,:14,:15,:16,:17,:18,
 		  :19,:20,:21,:22,:23,:24,:25,:26,:27,:28,:29,:30,:31,:32,:33,:34,:35,:36,:37,
 		  :38,:39,:40,:41,:42,:43,:44,:45,:46,:47,:48,:49,:50,:51,:52,:53,:54,:55,:56,
-		  :57,:58,:59,:60,:61,:62)`
+		  :57,:58,:59,:60,:61,:62,:63,:64)`
 	for _, e := range ents {
 		_, err := s.db.ExecContext(ctx, sqlStmt,
 			e.InsCode, nullStr(e.FileId), e.RefSerNumber,
@@ -671,7 +712,7 @@ func (s *oracleStore) InsertIpmOutWork(ctx context.Context, ents []*IpmOutWorkEn
 			nullStrP(e.DE041), nullStrP(e.DE042), nullStrP(e.DE043),
 			nullStrP(e.DE049), nullStrP(e.DE054), nullStrP(e.DE063),
 			nullStrP(e.DE071), nullStrP(e.DE072), nullStrP(e.DE093),
-			nullStrP(e.DE094), nullStrP(e.DE095),
+			nullStrP(e.DE094), nullStrP(e.DE095), nullStrP(e.DE105),
 			nullStrP(e.PDS23), nullStr(e.PDS25), nullStr(e.PDS52),
 			nullStrP(e.PDS137), nullStrP(e.PDS148), nullStr(e.PDS149),
 			nullStrP(e.PDS155), nullStrP(e.PDS165), nullStr(e.PDS176),
@@ -852,7 +893,7 @@ func (s *oracleStore) InsertMcData(ctx context.Context, ents []*McAcqTxnDataEnti
 			nullStr(e.CvmResult), nullStr(e.TrlCapabilities), nullStr(e.IfdSerNumber), nullStr(e.Tcc), nullStr(e.ChipCurCode),
 			nullStr(e.ChipTrlType), nullStr(e.TrlAppVerNumber), nullStr(e.TxnSeqCounter), nullStr(e.IssAuthData), nullStr(e.TxnlifeCycleId),
 			nullStr(e.MsgNumber), nullStr(e.MemberText), nullStr(e.OrgInstIdCode), nullStr(e.RevIndiCator), nullStr(e.Maid),
-			nullStr(e.CardType), nullStr(e.CardDomIntlFlag), nullStr(e.DmsSmsMode), nullStr(e.PosPgType), nullStr(e.CentreProcDate),
+			nullStr(e.CardType), nullStr(e.CardDomIntlFlag), nullStr(e.DmsSmsMode), nullStr(e.PosPgType), nullTimeP(e.CentreProcDate),
 			nullStr(e.EncryptedCardNumber), nullIntP(e.MrpSerNumber), nullStr(e.MeCountryOfOrigin), e.TipAmount, nullStr(e.ChipTrlCapabilities),
 			nullStr(e.DedicatedFileName), nullStr(e.CardAccepStreetAddress), nullStr(e.CustomerServicePhNum), nullStr(e.DccIndicator), nullStr(e.DccCurrency),
 			e.DccAmount, e.DccTxnCurrencyExponent, nullStr(e.MposAccDevType), nullStr(e.AccepterUrlAddress))
@@ -926,7 +967,7 @@ func (s *oracleStore) InsertMcWork(ctx context.Context, ents []*McAcqTxnWorkEnti
 			nullStr(e.CvmResult), nullStr(e.TrlCapabilities), nullStr(e.IfdSerNumber), nullStr(e.Tcc), nullStr(e.ChipCurCode),
 			nullStr(e.ChipTrlType), nullStr(e.TrlAppVerNumber), nullStr(e.TxnSeqCounter), nullStr(e.IssAuthData), nullStr(e.TxnlifeCycleId),
 			nullStr(e.MsgNumber), nullStr(e.MemberText), nullStr(e.OrgInstIdCode), nullStr(e.RevIndiCator), nullStr(e.Maid),
-			nullStr(e.CardType), nullStr(e.CardDomIntlFlag), nullStr(e.DmsSmsMode), nullStr(e.PosPgType), nullStr(e.CentreProcDate),
+			nullStr(e.CardType), nullStr(e.CardDomIntlFlag), nullStr(e.DmsSmsMode), nullStr(e.PosPgType), nullTimeP(e.CentreProcDate),
 			nullStr(e.EncryptedCardNumber), nullIntP(e.MrpSerNumber), nullStr(e.MeCountryOfOrigin), e.TipAmount, nullStr(e.ChipTrlCapabilities),
 			nullStr(e.DedicatedFileName), nullStr(e.CardAccepStreetAddress), nullStr(e.CustomerServicePhNum), nullStr(e.DccIndicator), nullStr(e.DccCurrency),
 			e.DccAmount, e.DccTxnCurrencyExponent, nullStr(e.MposAccDevType), nullStr(e.AccepterUrlAddress))
@@ -992,7 +1033,7 @@ func (s *oracleStore) CompletePosStatus(ctx context.Context, ins int) error {
 		UPDATE POS_TRANSACTIONS pos SET
 		  pos.PTR_GEN_STATUS = 6,
 		  pos.PTR_OUT_STATUS = 'Completed'
-		WHERE pos.PTR_RRN IN (
+		WHERE pos.PTR_RET_REF_NUMBER IN (
 		  SELECT mc.MCT_RET_REF_NUMBER FROM MC_ACQ_TXN_WORK mc WHERE mc.MCT_GEN_STATUS = 4
 		)
 		AND pos.PTR_NETWORK IN ('MCI','MDS')

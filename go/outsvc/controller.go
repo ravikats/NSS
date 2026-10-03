@@ -72,6 +72,18 @@ func (c *OutgoingController) RevertLastCollectionOnly(w http.ResponseWriter, r *
 	writeMessage(w, http.StatusOK, "Not yet implemented")
 }
 
+// Validations handles GET /outgoing/v1/validations. It returns the in-memory
+// validation results, newest first, so the inquiry UI can show the
+// reconciliation outcome per generated file.
+func (c *OutgoingController) Validations(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	results := c.svc.Validations()
+	if results == nil {
+		results = []*ValidationResult{}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"validations": results})
+}
+
 func writeMessage(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

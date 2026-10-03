@@ -3,6 +3,7 @@ package outsvc
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -17,6 +18,7 @@ type OutgoingConfig struct {
 	JaywanSysCode      int
 	AmexSysCode        int
 	MercurySysCode     int
+	MercuryMemberId    string
 	UnionPaySysCode    int
 	GCOSysCode         int
 	GOCSysCode         int
@@ -27,6 +29,25 @@ type OutgoingConfig struct {
 	FileCategory       string
 	VersionNumber      string
 	UnionPayVersionTag string
+	Region             string
+
+	// IPMValidationStrict controls what happens when a generated Mastercard
+	// IPM file fails compliance validation.
+	//
+	// Default (false) is report-only: the outcome is logged, published to the
+	// inquiry UI and the file is generated normally. Set it to true to make a
+	// failing file abort generation (work rows -> 7, file log -> 5).
+	//
+	// Report-only is the default because the shipped rule set requires data
+	// this producer does not emit: VW_IPM_OUT_WORK returns NULL for every DE55
+	// subfield and every DE48 PDS field, so DE105_REQUIRED and
+	// MERCHANT_COUNTRY_OF_ORIGIN_REQUIRED would fail every generated file.
+	// Strict mode is opt-in once the rules are reconciled with this producer.
+	IPMValidationStrict bool
+
+	// IPMReportsDir is the directory where IPM compliance CSV/JSONL reports
+	// are written. If empty, defaults to <ReconOutDir>/ipm_reports/.
+	IPMReportsDir string
 }
 
 // OutgoingService orchestrates the outgoing file generation flow
@@ -37,17 +58,25 @@ type OutgoingService struct {
 	ipm    *IpmOutProcessor
 	crypto CardCrypto
 	now    func() time.Time
+
+	validationMu sync.Mutex
+	validations  []*ValidationResult
 }
 
 // NewOutgoingService wires the orchestrator.
 func NewOutgoingService(cfg OutgoingConfig, store Store, crypto CardCrypto) *OutgoingService {
-	return &OutgoingService{
+	s := &OutgoingService{
 		cfg:    cfg,
 		store:  store,
-		ipm:    NewIpmOutProcessor(cfg.ReconOutDir, cfg.ProcessingMode, store, crypto),
+		ipm:    NewIpmOutProcessor(cfg.ReconOutDir, cfg.IPMReportsDir, cfg.ProcessingMode, store, crypto),
 		crypto: crypto,
 		now:    time.Now,
 	}
+	// Publish Mastercard IPM compliance outcomes through the same in-memory
+	// history the UI already reads for Mercury EIF files.
+	s.ipm.SetValidationHook(s.recordValidation)
+	s.ipm.SetStrict(cfg.IPMValidationStrict)
+	return s
 }
 
 const outgoingDateLayout = "02/01/2006 15:04:05"
@@ -71,8 +100,7 @@ func (s *OutgoingService) ProcessAndMoveData(ctx context.Context, vo *OutGoingRe
 	return "Outgoing File Processing Scheduled Successfully."
 }
 
-// getTxnCount counts gen_status=3 work rows for the network/date range. The
-// AMEX branch returns 0 until that network is ported.
+// getTxnCount counts gen_status=3 work rows for the network/date range.
 func (s *OutgoingService) getTxnCount(ctx context.Context, network string, insCode int, fromDate, toDate *time.Time) int {
 	if network == "" {
 		return 0
@@ -101,7 +129,12 @@ func (s *OutgoingService) getTxnCount(ctx context.Context, network string, insCo
 			}
 			return n
 		case "AMEX":
-			return 0
+			n, err := s.store.CountAmexWorkLessThanEqual(ctx, insCode, 3, *toDate)
+			if err != nil {
+				logOutsvc("CountAmexWorkLessThanEqual", err)
+				return 0
+			}
+			return n
 		case "MERCURY":
 			n, err := s.store.CountMercuryWorkLessThanEqual(ctx, insCode, 3, *toDate)
 			if err != nil {
@@ -142,7 +175,12 @@ func (s *OutgoingService) getTxnCount(ctx context.Context, network string, insCo
 		}
 		return n
 	case "AMEX":
-		return 0
+		n, err := s.store.CountAmexWorkBetween(ctx, insCode, 3, *fromDate, *toDate)
+		if err != nil {
+			logOutsvc("CountAmexWorkBetween", err)
+			return 0
+		}
+		return n
 	case "MERCURY":
 		n, err := s.store.CountMercuryWorkBetween(ctx, insCode, 3, *fromDate, *toDate)
 		if err != nil {
@@ -174,7 +212,7 @@ func (s *OutgoingService) scheduleFileProcessing(ctx context.Context, insCode, u
 		case "JAYWAN":
 			s.ProcessJaywanOutgoing(bg, insCode, user, formatCode, insShortName, fromDate, toDate)
 		case "AMEX":
-			logOutsvc("scheduleFileProcessing", fmt.Errorf("network %s not yet ported", network))
+			s.ProcessAmexOutgoing(bg, insCode, user, formatCode, insShortName, fromDate, toDate)
 		case "MERCURY":
 			s.ProcessMercuryOutgoing(bg, insCode, user, formatCode, insShortName, fromDate, toDate)
 		case "UNIONPAY":
@@ -246,23 +284,28 @@ func (s *OutgoingService) ProcessMCOutgoing(ctx context.Context, insCode, user, 
 		logOutsvc("FindAcquirerBins", err)
 		return "Failed"
 	}
-	if len(acqBinList) > 0 && acqBinList[0] != nil {
-		acq := acqBinList[0]
-		if acq.McIcaNo != nil {
-			processorID = *acq.McIcaNo
-		}
-		if acq.OutfileDate != nil && sameCalendarDay(*acq.OutfileDate, now) {
-			seqNo = acq.OutFileSeq
-		} else {
-			seqNo = 1
-		}
-		acq.OutFileSeq = seqNo + 1
-		t := now
-		acq.OutfileDate = &t
-		if err := s.store.UpdateAcquirerBin(ctx, acq); err != nil {
-			logOutsvc("UpdateAcquirerBin", err)
-			return "Failed"
-		}
+	if len(acqBinList) == 0 || acqBinList[0] == nil {
+		// Without this row the sequence can never advance, so every run would
+		// produce the same ".00" name and silently overwrite the previous file.
+		// Fail loudly instead of writing a file that destroys its predecessor.
+		logOutsvc("FindAcquirerBins", fmt.Errorf("no ACQUIRER_BINS row for bin_type=M ins=%d: cannot allocate file sequence", insCode))
+		return "Failed"
+	}
+	acq := acqBinList[0]
+	if acq.McIcaNo != nil {
+		processorID = *acq.McIcaNo
+	}
+	if acq.OutfileDate != nil && sameCalendarDay(*acq.OutfileDate, now) {
+		seqNo = acq.OutFileSeq
+	} else {
+		seqNo = 1
+	}
+	acq.OutFileSeq = seqNo + 1
+	t := now
+	acq.OutfileDate = &t
+	if err := s.store.UpdateAcquirerBin(ctx, acq); err != nil {
+		logOutsvc("UpdateAcquirerBin", err)
+		return "Failed"
 	}
 
 	fileName = insShortName + "R111" + now.Format("02012006") + fmt.Sprintf(".%02d", seqNo)
@@ -335,7 +378,7 @@ func (s *OutgoingService) RevertLastOutgoingData(ctx context.Context, intCategor
 				logOutsvc("InsertMcWork", err)
 				return "Please provide valid network"
 			}
-			s.updatePOSData(ctx, nil, data, nil)
+			s.updatePOSData(ctx, nil, data, nil, nil)
 			if err := s.store.DeleteMcData(ctx, data); err != nil {
 				logOutsvc("DeleteMcData", err)
 				return "Please provide valid network"
@@ -387,7 +430,7 @@ func (s *OutgoingService) RevertLastOutgoingData(ctx context.Context, intCategor
 					posCodes = append(posCodes, d.TxnRefNumber)
 				}
 			}
-			s.updatePOSData(ctx, posCodes, nil, nil)
+			s.updatePOSData(ctx, posCodes, nil, nil, nil)
 			if err := s.store.DeleteVisaData(ctx, data); err != nil {
 				logOutsvc("DeleteVisaData", err)
 				return "Please provide valid network"
@@ -439,9 +482,60 @@ func (s *OutgoingService) RevertLastOutgoingData(ctx context.Context, intCategor
 					posCodes = append(posCodes, d.TxnRefNumber)
 				}
 			}
-			s.updatePOSData(ctx, posCodes, nil, nil)
+			s.updatePOSData(ctx, posCodes, nil, nil, nil)
 			if err := s.store.DeleteJaywanData(ctx, data); err != nil {
 				logOutsvc("DeleteJaywanData", err)
+				return "Please provide valid network"
+			}
+			if err := s.store.DeleteFileLogByInstitutionAndFileIdAndInterface(ctx, insCode, outFileId, intCode); err != nil {
+				logOutsvc("DeleteFileLogByInstitutionAndFileIdAndInterface", err)
+				return "Please provide valid network"
+			}
+			return "Revert Successfully Completed"
+		}
+		return "No Outgoing Data for the file ID"
+	case "MERCURY":
+		intf, err := s.store.FindInterfaceByCategory(ctx, "MERCURY")
+		if err != nil {
+			logOutsvc("FindInterfaceByCategory", err)
+			return "Please provide valid network"
+		}
+		intCode := 0
+		if intf != nil {
+			intCode = intf.InterfaceCode
+		}
+		fileLog, err := s.store.FindFileLogTopByStatusAndInterface(ctx, 4, intCode)
+		if err != nil {
+			logOutsvc("FindFileLogTopByStatusAndInterface", err)
+			return "Please provide valid network"
+		}
+		if fileLog == nil || fileLog.FileId == nil {
+			return "No Outgoing Data for the file ID"
+		}
+		outFileId := *fileLog.FileId
+		data, err := s.store.FindMercuryDataByFileId(ctx, insCode, outFileId)
+		if err != nil {
+			logOutsvc("FindMercuryDataByFileId", err)
+			return "Please provide valid network"
+		}
+		if len(data) > 0 {
+			work := make([]*MercuryAcqTxnWorkEntity, 0, len(data))
+			for _, d := range data {
+				work = append(work, mapMercuryDataToWork(d))
+			}
+			if err := s.store.InsertMercuryWork(ctx, work); err != nil {
+				logOutsvc("InsertMercuryWork", err)
+				return "Please provide valid network"
+			}
+			var posCodes []int64
+			for _, d := range data {
+				if d.TxnRefNumber > 0 {
+					posCodes = append(posCodes, d.TxnRefNumber)
+				}
+			}
+			s.updatePOSData(ctx, nil, nil, nil, posCodes)
+			if err := s.store.DeleteMercuryData(ctx, data); err != nil {
+				logOutsvc("DeleteMercuryData", err)
 				return "Please provide valid network"
 			}
 			if err := s.store.DeleteFileLogByInstitutionAndFileIdAndInterface(ctx, insCode, outFileId, intCode); err != nil {
@@ -469,7 +563,7 @@ func mapMcDataToWork(d *McAcqTxnDataEntity) *McAcqTxnWorkEntity {
 }
 
 // updatePOSData marks POS transactions "Marked for Outgoing" during revert.
-func (s *OutgoingService) updatePOSData(ctx context.Context, visaAcqData []int64, mcAcqData []*McAcqTxnDataEntity, jaywanAcqData []int64) {
+func (s *OutgoingService) updatePOSData(ctx context.Context, visaAcqData []int64, mcAcqData []*McAcqTxnDataEntity, jaywanAcqData []int64, mercuryAcqData []int64) {
 	var posCodes []int64
 	switch {
 	case visaAcqData != nil:
@@ -482,6 +576,8 @@ func (s *OutgoingService) updatePOSData(ctx context.Context, visaAcqData []int64
 		}
 	case jaywanAcqData != nil:
 		posCodes = jaywanAcqData
+	case mercuryAcqData != nil:
+		posCodes = mercuryAcqData
 	default:
 		return
 	}
