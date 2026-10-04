@@ -7,35 +7,46 @@ import "time"
 // network work tables. Fields absent from the physical table stay zero
 // because bindRow only maps columns present in the result set.
 type UnionPayAcqTxnWorkEntity struct {
-	SerialNumber         int64      `db:"UPT_SER_NUMBER"`
-	LastUpdated          time.Time  `db:"UPT_LAST_UPDATED"`
-	UpdatedUser          int        `db:"UPT_UPDATED_USER"`
-	InstitutionCode      int        `db:"UPT_INS_CODE"`
-	IntCode              int        `db:"UPT_INT_CODE"`
-	PrjSerNumber         int64      `db:"UPT_PRJ_SER_NUMBER"`
-	GenStatus            int        `db:"UPT_GEN_STATUS"`
-	TxnRefNumber         int64      `db:"UPT_TXN_REF_NUMBER"`
-	Rrn                  string     `db:"UPT_RET_REF_NUMBER"`
-	MerchantId           string     `db:"UPT_MERCHANT_ID"`
-	TerminalId           string     `db:"UPT_TERMINAL_ID"`
-	TxnType              string     `db:"UPT_TXN_TYPE"`
-	CardNumber           string     `db:"UPT_CARD_NUMBER"`
-	TxnAmount            float64    `db:"UPT_TXN_AMOUNT"`
-	SurchargeAmount      float64    `db:"UPT_SCHG_AMOUNT"`
-	LocalDateTime        *time.Time `db:"UPT_LOCAL_DATE_TIME"`
-	TxnDate              *time.Time `db:"UPT_TXN_DATE"`
-	MeName               string     `db:"UPT_ME_NAME"`
-	MeCity               string     `db:"UPT_ME_CITY"`
-	MeCountry            string     `db:"UPT_ME_COUNTRY"`
-	Mcc                  string     `db:"UPT_MCC"`
-	ApprovalCode         string     `db:"UPT_APPR_CODE"`
-	TxnCurCode           string     `db:"UPT_TXN_CUR_CODE"`
-	StanNumber           string     `db:"UPT_STAN"`
-	OrgInstIdCode        string     `db:"UPT_ORG_INST_ID_CODE"`
-	AcqinstIdCode        string     `db:"UPT_ACQ_INST_ID_CODE"`
-	FwdInstIdCode        string     `db:"UPT_FWD_INST_ID_CODE"`
-	AcqRefData           string     `db:"UPT_ACQ_REF_DATA"`
-	ResponseCode         string     `db:"UPT_RESP_CODE"`
+	SerialNumber    int64     `db:"UPT_SER_NUMBER"`
+	LastUpdated     time.Time `db:"UPT_LAST_UPDATED"`
+	UpdatedUser     int       `db:"UPT_UPDATED_USER"`
+	InstitutionCode int       `db:"UPT_INS_CODE"`
+	IntCode         int       `db:"UPT_INT_CODE"`
+	PrjSerNumber    int64     `db:"UPT_PRJ_SER_NUMBER"`
+	GenStatus       int       `db:"UPT_GEN_STATUS"`
+	TxnRefNumber    int64     `db:"UPT_TXN_REF_NUMBER"`
+	Rrn             string    `db:"UPT_RET_REF_NUMBER"`
+	MerchantId      string    `db:"UPT_MERCHANT_ID"`
+	TerminalId      string    `db:"UPT_TERMINAL_ID"`
+	TxnType         string    `db:"UPT_TXN_TYPE"`
+	// OriginalRRN correlates a refund (TC101) with its original sale. Drives
+	// Block 0 positions 169-191 (original transaction code/date-time/STAN and
+	// the settlement date).
+	OriginalRRN     string     `db:"UPT_ORIG_RET_REF_NUMBER"`
+	CardNumber      string     `db:"UPT_CARD_NUMBER"`
+	TxnAmount       float64    `db:"UPT_TXN_AMOUNT"`
+	SurchargeAmount float64    `db:"UPT_SCHG_AMOUNT"`
+	LocalDateTime   *time.Time `db:"UPT_LOCAL_DATE_TIME"`
+	TxnDate         *time.Time `db:"UPT_TXN_DATE"`
+	MeName          string     `db:"UPT_ME_NAME"`
+	MeCity          string     `db:"UPT_ME_CITY"`
+	MeCountry       string     `db:"UPT_ME_COUNTRY"`
+	// AcqInstCountryCode is the NUMERIC country code (ISO Field 19, e.g. 784)
+	// that feeds Block 0 positions 245-247. It is NOT the alpha merchant
+	// country in MeCountry.
+	AcqInstCountryCode string `db:"UPT_ACQ_INST_COUNTRY_CODE"`
+	Mcc                string `db:"UPT_MCC"`
+	ApprovalCode       string `db:"UPT_APPR_CODE"`
+	TxnCurCode         string `db:"UPT_TXN_CUR_CODE"`
+	StanNumber         string `db:"UPT_STAN"`
+	OrgInstIdCode      string `db:"UPT_ORG_INST_ID_CODE"`
+	AcqinstIdCode      string `db:"UPT_ACQ_INST_ID_CODE"`
+	FwdInstIdCode      string `db:"UPT_FWD_INST_ID_CODE"`
+	AcqRefData         string `db:"UPT_ACQ_REF_DATA"`
+	ResponseCode       string `db:"UPT_RESP_CODE"`
+	// ECI is the electronic commerce indicator (ISO F60.2.8) for Block 0
+	// positions 258-259. Empty means the default "00" (non-ecommerce).
+	ECI                  string     `db:"UPT_ECI"`
 	ReceivingInstIdCode  string     `db:"UPT_RECV_INST_ID_CODE"`
 	PosConditionCode     string     `db:"UPT_POS_CONDITION_CODE"`
 	TxnInitiatingChannel string     `db:"UPT_TXN_INIT_CHANNEL"`

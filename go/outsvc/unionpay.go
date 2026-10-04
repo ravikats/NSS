@@ -20,12 +20,34 @@ const (
 	unionPayDualMessage      = "1"
 	unionPayMaxTxnsPerFile   = 50000
 	unionPayVersionNumber    = "00000001"
-	unionPayConversion1To1   = "20000100" // decimals=2, rate 1.00 (n8)
-	unionPayIRFRate          = "30001000" // fixed RF->settlement rate (n8)
 	unionPayIIN              = ""
 	unionPayTC000BlockBitmap = "8000" // header/trailer: Block 0 only
 	unionPayBlock01Bitmap    = "C000" // Block 0 + Block 1
 	unionPayBlock012Bitmap   = "E000" // Block 0 + Block 1 + Block 2
+
+	// Part III section 2.7: in the OUTGOING direction (Member -> GSCS) every
+	// field that is only valid in the incoming direction carries its DEFAULT
+	// value, not a blank -- the records are fixed length. Numeric fields are
+	// 0-filled, alphabetic/ans fields are space-filled, and x+n11 amount fields
+	// carry the 'D' credit indicator followed by zeros. These are the verified
+	// defaults, not placeholders.
+	unionPayZero12        = "000000000000" // n12 amount, default zero
+	unionPayZero8         = "00000000"     // n8 conversion rate, default zero
+	unionPaySpace3        = "   "          // ans3 currency, space-filled
+	unionPayCreditZero11  = "D00000000000" // x+n11 credit indicator + zeros
+	unionPayZero11        = "00000000000"  // n11, default zero
+	unionPayZero3         = "000"          // n3, default zero
+	unionPayECINonEcom    = "00"           // n2, F60.2.8 non-ecommerce
+	unionPayInitAttended  = "1"            // ans1, F60.3.5 attended POS
+	unionPayOrigAuthFixed = "100"          // n3, original auth fixed-amount
+	unionPayOrigAuthNone  = "   "          // n3, spaces on a TC101 refund
+
+	// Transaction codes. A refund (processing code 20xx) is TC101 and carries
+	// bitmap C000 -- Block 2 is not present on a refund record.
+	unionPayTC100 = "100" // sale / original authorization
+	unionPayTC101 = "101" // refund
+	// Refund processing codes start with these two digits.
+	unionPayRefundPrefix = "20"
 )
 
 // ProcessUnionPayOutgoing is the Go port for the UnionPay outgoing settlement
@@ -346,23 +368,45 @@ func unionPayTC001(totalRecords int) string {
 // unionPayTxnRecord assembles the TC100 transaction record: Block 0 always,
 // Block 1 (exchange-rate features) always, Block 2 (IC card data) only for
 // chip transactions.
+//
+// A refund (processing code 20xx) is TC101 and carries bitmap C000 -- Block 2
+// is not present on a refund record, so a refunded chip txn emits 387 chars,
+// not 681.
 func unionPayTxnRecord(txn *UnionPayAcqTxnWorkEntity, response map[string]string, mult *big.Rat) string {
 	pan := response[txn.EncryptedCardNumber]
-	chip := unionPayIsChipTxn(txn)
+	tc := unionPayTransactionCode(txn.TxnType)
 	bitmap := unionPayBlock01Bitmap
-	if chip {
+	if tc == unionPayTC101 {
+		// Refund: Block 0 + Block 1 only.
+		return unionPayBlock0(txn, pan, tc, bitmap, mult) + unionPayBlock1(txn, mult)
+	}
+	if unionPayIsChipTxn(txn) {
 		bitmap = unionPayBlock012Bitmap
 	}
-	rec := unionPayBlock0(txn, pan, bitmap, mult)
+	rec := unionPayBlock0(txn, pan, tc, bitmap, mult)
 	rec += unionPayBlock1(txn, mult)
-	if chip {
+	if unionPayIsChipTxn(txn) {
 		rec += unionPayBlock2(txn, mult)
 	}
 	return rec
 }
 
+// unionPayTransactionCode maps the processing code to the UnionPay transaction
+// code: a refund (20xx) is 101, everything else is 100.
+func unionPayTransactionCode(procCode string) string {
+	if strings.HasPrefix(procCode, unionPayRefundPrefix) {
+		return unionPayTC101
+	}
+	return unionPayTC100
+}
+
+// unionPayIsRefund reports whether the processing code denotes a refund.
+func unionPayIsRefund(procCode string) bool {
+	return strings.HasPrefix(procCode, unionPayRefundPrefix)
+}
+
 // unionPayBlock0 builds the basic settlement information (269 chars).
-func unionPayBlock0(txn *UnionPayAcqTxnWorkEntity, pan, bitmap string, mult *big.Rat) string {
+func unionPayBlock0(txn *UnionPayAcqTxnWorkEntity, pan, tc, bitmap string, mult *big.Rat) string {
 	mmddhhmmss := "0000000000"
 	authDate := "    "
 	if txn.LocalDateTime != nil {
@@ -375,23 +419,13 @@ func unionPayBlock0(txn *UnionPayAcqTxnWorkEntity, pan, bitmap string, mult *big
 	}
 	channel := unionPayPad(txn.TxnInitiatingChannel, 2)
 	if strings.TrimSpace(channel) == "" {
-		channel = "00"
+		channel = "03" // POS
 	}
-	pricing := unionPayPad(txn.PricingSchemeCode, 2)
-	if strings.TrimSpace(pricing) == "" {
-		pricing = "00"
+	origTxnInfo := strings.Repeat("0", 23)
+	if unionPayIsRefund(txn.TxnType) {
+		origTxnInfo = unionPayOriginalTxnInfo(txn)
 	}
-	// Positions 240-269 "other information": installment(2) + stand-in(1) +
-	// POS condition(2) + merchant country(3) + initiation method(1) +
-	// original auth type(3) + card level(1) + pricing scheme(2) + reserved(15).
-	otherInfo := "00" + " " +
-		unionPayPad(txn.PosConditionCode, 2) +
-		unionPayPad(txn.MeCountry, 3) +
-		" " + "100" + " " +
-		pricing +
-		unionPayPad("", 15)
-
-	return "100" + bitmap +
+	return tc + bitmap +
 		unionPayPad(pan, 19) +
 		unionPayMinor12(txn.TxnAmount, mult) +
 		currency +
@@ -405,8 +439,8 @@ func unionPayBlock0(txn *UnionPayAcqTxnWorkEntity, pan, bitmap string, mult *big
 		unionPayPad(txn.Mcc, 4) +
 		unionPayPad(txn.TerminalId, 8) +
 		unionPayPad(txn.MerchantId, 15) +
-		unionPayPad(txn.MeName, 40) +
-		strings.Repeat("0", 23) + // original transaction information
+		unionPayMerchantName(txn) +
+		origTxnInfo +
 		"0000" + // message reason code
 		unionPayDualMessage +
 		"000000000" + // GSCS serial number (filled by Member with zeros)
@@ -414,35 +448,169 @@ func unionPayBlock0(txn *UnionPayAcqTxnWorkEntity, pan, bitmap string, mult *big
 		unionPayPad(txn.OrgInstIdCode, 11) +
 		"0" + // identifier of GSCS notice
 		channel +
-		" " + // identifier of transaction features
+		unionPayFeatureIndicator(txn) +
 		"   " + // transaction scenario indicator
 		"     " + // reserved
-		otherInfo
+		unionPayOtherInformation(txn)
+}
+
+// unionPayOriginalTxnInfo builds Block 0 positions 169-191 (n23) for a refund:
+// the original transaction code (n3), its date/time (n10), its STAN (n6) and
+// the settlement date (n4). A refund without an original is all zeros.
+func unionPayOriginalTxnInfo(txn *UnionPayAcqTxnWorkEntity) string {
+	origDateTime := "0000000000"
+	origStan := "000000"
+	settleDate := "0000"
+	if txn.LocalDateTime != nil {
+		origDateTime = txn.LocalDateTime.Format("0102150405")
+		settleDate = txn.LocalDateTime.Format("0102")
+	}
+	if s := strings.TrimSpace(txn.OriginalRRN); s != "" {
+		// Last 6 of the RRN is the best available STAN correlation.
+		origStan = unionPayPad(s, 6)
+	}
+	return unionPayTC100 + origDateTime + origStan + settleDate
+}
+
+// unionPayFeatureIndicator builds Block 0 position 231: a space on a TC100
+// sale, 'R' on a TC101 refund.
+func unionPayFeatureIndicator(txn *UnionPayAcqTxnWorkEntity) string {
+	if unionPayIsRefund(txn.TxnType) {
+		return "R"
+	}
+	return " "
+}
+
+// unionPayMerchantName builds Block 0 positions 129-168 (ans40, ISO Field 43):
+// name left-justified in 25, city in 12, alpha-2 country in 3.
+//
+// The value must EQUAL Field 43 of the original authorization, which carries
+// the alpha-2 country ("AE"), even though the payload/terminal config holds the
+// alpha-3 form ("ARE"). Do NOT truncate the 40-char field naively -- slicing an
+// alpha-3 suffix at 39 chars yields "AR".
+func unionPayMerchantName(txn *UnionPayAcqTxnWorkEntity) string {
+	name := unionPayClamp(txn.MeName, 25)
+	city := unionPayClamp(txn.MeCity, 12)
+	// Left-justified in 3 so the total is exactly 40 even for an alpha-2 code.
+	country := unionPayClamp(unionPayAlpha2(txn.MeCountry), 3)
+	return name + city + country
+}
+
+// unionPayClamp left-justifies and space-pads v to width n, truncating when
+// longer -- the Python reference uses f"{v:<n}"[:n].
+func unionPayClamp(v string, n int) string {
+	if len(v) >= n {
+		return v[:n]
+	}
+	return v + strings.Repeat(" ", n-len(v))
+}
+
+// unionPayAlpha3ToAlpha2 maps an ISO alpha-3 country code to the alpha-2 form
+// used in Field 43.3. Unknown alpha-3 codes map to "" so the sub-field stays
+// blank rather than silently carrying a wrong country.
+var unionPayAlpha3ToAlpha2 = map[string]string{
+	"ARE": "AE", "USA": "US", "GBR": "GB", "CHN": "CN", "HKG": "HK", "MAC": "MO",
+	"SGP": "SG", "JPN": "JP", "KOR": "KR", "IND": "IN", "THA": "TH", "MYS": "MY",
+	"IDN": "ID", "PHL": "PH", "VNM": "VN", "AUS": "AU", "NZL": "NZ", "CAN": "CA",
+	"DEU": "DE", "FRA": "FR", "ITA": "IT", "ESP": "ES", "NLD": "NL", "CHE": "CH",
+	"SAU": "SA", "QAT": "QA", "KWT": "KW", "BHR": "BH", "OMN": "OM", "EGY": "EG",
+	"JOR": "JO", "LBN": "LB", "TUR": "TR", "ZAF": "ZA", "NGA": "NG", "KEN": "KE",
+	"BRA": "BR", "MEX": "MX", "ARG": "AR", "RUS": "RU", "UKR": "UA", "POL": "PL",
+	"SWE": "SE", "NOR": "NO", "DNK": "DK", "FIN": "FI", "PRT": "PT", "IRL": "IE",
+}
+
+// unionPayAlpha2 normalises a country code to alpha-2.
+func unionPayAlpha2(code string) string {
+	c := strings.ToUpper(strings.TrimSpace(code))
+	switch len(c) {
+	case 3:
+		return unionPayAlpha3ToAlpha2[c]
+	case 2:
+		return c
+	default:
+		return ""
+	}
+}
+
+// unionPayOtherInformation builds Block 0 positions 240-269 (30 chars,
+// Part III Table 36 Note a). Each sub-field below is annotated with its
+// position. Sub-fields valid only in the INCOMING direction are default-filled
+// per section 2.7 rather than blanked.
+func unionPayOtherInformation(txn *UnionPayAcqTxnWorkEntity) string {
+	// 243-244 n2 POS condition code (ISO Field 25).
+	pscc := unionPayPad(txn.PosConditionCode, 2)
+	if strings.TrimSpace(pscc) == "" {
+		pscc = "00"
+	}
+	// 245-247 n3 merchant country (ISO Field 19) -- NUMERIC, e.g. 784. This is
+	// the acquirer's country code, not the alpha merchant country in MeCountry.
+	country := unionPayPad(txn.AcqInstCountryCode, 3)
+	if strings.TrimSpace(country) == "" {
+		country = unionPayDefaultCurrency
+	}
+	// 249-251 n3 original authorization type: spaces on a refund, otherwise
+	// "100" (original authorization, fixed amount).
+	origAuthType := unionPayOrigAuthFixed
+	if unionPayIsRefund(txn.TxnType) {
+		origAuthType = unionPayOrigAuthNone
+	}
+	// 253-254 n2 pricing scheme -- the manual requires the default "00".
+	pricing := unionPayPad(txn.PricingSchemeCode, 2)
+	if strings.TrimSpace(pricing) == "" {
+		pricing = "00"
+	}
+	// 258-259 n2 ECI (ISO F60.2.8): "00" for a non-ecommerce transaction.
+	eci := unionPayPad(txn.ECI, 2)
+	if strings.TrimSpace(eci) == "" {
+		eci = unionPayECINonEcom
+	}
+	value := "  " + // 240-241 n2 installment terms   (incoming only)
+		" " + // 242 ans1 stand-in authorization   (incoming only)
+		pscc +
+		country +
+		unionPayInitAttended + // 248 ans1 initiation method (attended POS)
+		origAuthType +
+		" " + // 252 ans1 card level              (incoming only)
+		pricing +
+		unionPaySpace3 + // 255-257 n3 special currency   (incoming only)
+		eci +
+		"  " + // 260-261 n2 card product           (incoming only)
+		"  " + // 262-263 n2 account attribute      (incoming only)
+		" " + // 264 ans1 UPI indicator             (incoming only)
+		"  " + // 265-266 n2 B2B type               (incoming only)
+		" " + // 267 ans1 B2B medium                (incoming only)
+		"  " // 268-269 n2 special pricing         (incoming only)
+	if len(value) != 30 {
+		// Defensive: the field layout above is fixed at 30 chars.
+		return unionPayPad(value, 30)
+	}
+	return value
 }
 
 // unionPayBlock1 builds the exchange-rate features information (118 chars).
+//
+// Every field from position 7 onward is incoming-direction only, so per Part
+// III section 2.7 each carries its default rather than a real value: the
+// Member does not settle, GSCS does, so repeating the transaction amount and
+// inventing conversion rates here would be wrong.
 func unionPayBlock1(txn *UnionPayAcqTxnWorkEntity, mult *big.Rat) string {
-	currency := unionPayPad(txn.TxnCurCode, 3)
-	if strings.TrimSpace(currency) == "" {
-		currency = unionPayDefaultCurrency
-	}
 	return unionPayPad(txn.PosEntryMode, 3) +
 		"0" + // floor limit identifier (online authorization)
 		"0 " + // type of payment service requested
-		unionPayMinor12(txn.TxnAmount, mult) + // amount, settlement
-		currency + // currency code, settlement
-		unionPayConversion1To1 + // conversion rate, settlement
-		unionPayMinor12(txn.TxnAmount, mult) + // amount, cardholder billing
-		currency + // currency code, cardholder billing
-		unionPayConversion1To1 + // conversion rate, cardholder billing
-		" 00000000000" + // net fee amount (x+n11)
-		"000" + // IRF billing currency
-		unionPayIRFRate + // exchange rate RF billing -> settlement
-		"   " + // abbreviation of international organization
-		" " + // Mainland China transaction indicator
-		" 00000000000" + // amount, transaction fee (x+n11)
-		unionPayPad("", 20) + // QRC voucher number
-		unionPayPad("", 7) // reserved
+		unionPayZero12 + // 7-18  amount, settlement
+		unionPaySpace3 + // 19-21 currency code, settlement
+		unionPayZero8 + // 22-29 conversion rate, settlement
+		unionPayZero12 + // 30-41 amount, cardholder billing
+		unionPaySpace3 + // 42-44 currency code, cardholder billing
+		unionPayZero8 + // 45-52 conversion rate, cardholder billing
+		unionPayCreditZero11 + // 53-64 net fee amount (x+n11)
+		unionPayZero3 + // 65-67 IRF billing currency
+		unionPayZero8 + // 68-75 exchange rate, RF billing -> settlement
+		unionPaySpace3 + // 76-78 abbreviation of international organization
+		" " + // 79    Mainland China transaction indicator
+		unionPayCreditZero11 + // 80-91 amount, transaction fee (x+n11)
+		unionPayPad("", 20) + // 92-111 QRC voucher number
+		unionPayPad("", 7) // 112-118 reserved
 }
 
 // unionPayBlock2 builds the IC card characteristic information (294 chars),
@@ -472,7 +640,7 @@ func unionPayBlock2(txn *UnionPayAcqTxnWorkEntity, mult *big.Rat) string {
 		unionPayPad(txn.TrlConCode, 3) +
 		unionPayPad(txn.IssAuthData, 42) +
 		"00" + // authorization response code (100/101/102)
-		unionPayPad(txn.ChipTxnType, 2) +
+		unionPayTransactionCategory(txn.TxnType) +
 		unionPayMinor12(txn.CryptAmount, mult) + // authorized amount (Tag9F02)
 		currency + // currency code, transaction (Tag5F2A)
 		unionPayPad(txn.CryptInfoData, 2) +
@@ -487,8 +655,19 @@ func unionPayBlock2(txn *UnionPayAcqTxnWorkEntity, mult *big.Rat) string {
 
 // ---- predicates & formatting helpers ----
 
+// unionPayIsChipTxn reports whether the record carries Block 2 IC card data.
 func unionPayIsChipTxn(txn *UnionPayAcqTxnWorkEntity) bool {
 	return strings.HasPrefix(txn.PosEntryMode, "05") || strings.HasPrefix(txn.PosEntryMode, "07") || strings.HasPrefix(txn.PosEntryMode, "95")
+}
+
+// unionPayTransactionCategory builds Block 2 positions 182-183: the first two
+// digits of the processing code (ISO Field 3, EMV Tag 9C). It is NOT the chip
+// transaction type.
+func unionPayTransactionCategory(procCode string) string {
+	if len(procCode) < 2 {
+		return unionPayZero3[:2]
+	}
+	return procCode[:2]
 }
 
 // unionPayMinor12 renders value*multiplier (minor units) as a 12-digit
