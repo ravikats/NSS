@@ -106,7 +106,10 @@ type Store interface {
 	UpdateUnionPayWorkStatuses(ctx context.Context, ents []*UnionPayAcqTxnWorkEntity) error
 	DeleteUnionPayWork(ctx context.Context, ents []*UnionPayAcqTxnWorkEntity) error
 	InsertUnionPayData(ctx context.Context, ents []*UnionPayAcqTxnDataEntity) error
+	InsertUnionPayWork(ctx context.Context, ents []*UnionPayAcqTxnWorkEntity) error
 	CompleteUnionPayPosStatus(ctx context.Context, ins int) error
+	FindUnionPayDataByFileId(ctx context.Context, ins int, fileId string) ([]*UnionPayAcqTxnDataEntity, error)
+	DeleteUnionPayData(ctx context.Context, ents []*UnionPayAcqTxnDataEntity) error
 
 	CountAmexWorkBetween(ctx context.Context, ins, status int, from, to time.Time) (int, error)
 	CountAmexWorkLessThanEqual(ctx context.Context, ins, status int, to time.Time) (int, error)

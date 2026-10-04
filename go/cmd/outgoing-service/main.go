@@ -114,6 +114,9 @@ func main() {
 		// Report-only by default: see OutgoingConfig.IPMValidationStrict.
 		IPMValidationStrict: env("IPM_VALIDATION_STRICT", "") == "true" || env("IPM_VALIDATION_STRICT", "") == "1",
 		IPMReportsDir:       env("IPM_REPORTS_DIR", ""),
+		// Report-only by default: see OutgoingConfig.VisaValidationStrict.
+		VisaValidationStrict: env("VISA_VALIDATION_STRICT", "") == "true" || env("VISA_VALIDATION_STRICT", "") == "1",
+		Base2ReportsDir:      env("BASE2_REPORTS_DIR", ""),
 	}
 
 	crypto := outsvc.NewCryptoClient(outsvc.CryptoConfig{

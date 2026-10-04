@@ -105,6 +105,17 @@ func (s *oracleStore) DeleteUnionPayWork(ctx context.Context, ents []*UnionPayAc
 	return nil
 }
 
+// InsertUnionPayWork inserts work rows for revert (serial number is DB-assigned).
+func (s *oracleStore) InsertUnionPayWork(ctx context.Context, ents []*UnionPayAcqTxnWorkEntity) error {
+	sqlStmt := "INSERT INTO UP_ACQ_TXN_WORK (" + unionPayColumns + ") VALUES (" + mercuryInsertValues(66) + ")"
+	for _, e := range ents {
+		if _, err := s.db.ExecContext(ctx, sqlStmt, unionPayDataArgs(e)...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 const unionPayColumns = `
 	UPT_SER_NUMBER, UPT_LAST_UPDATED, UPT_UPDATED_USER, UPT_INS_CODE, UPT_INT_CODE,
 	UPT_PRJ_SER_NUMBER, UPT_GEN_STATUS, UPT_TXN_REF_NUMBER, UPT_RET_REF_NUMBER,
@@ -167,4 +178,26 @@ func (s *oracleStore) CompleteUnionPayPosStatus(ctx context.Context, ins int) er
 		AND pos.PTR_GEN_STATUS = 4
 		AND pos.PTR_INS_CODE = :1`, ins)
 	return err
+}
+
+// FindUnionPayDataByFileId finds UP_ACQ_TXN_DATA rows by file ID for revert.
+func (s *oracleStore) FindUnionPayDataByFileId(ctx context.Context, ins int, fileId string) ([]*UnionPayAcqTxnDataEntity, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT * FROM UP_ACQ_TXN_DATA
+		WHERE UPT_INS_CODE = :1 AND UPT_FILE_ID = :2`, ins, fileId)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return bindUnionPayWork(rows)
+}
+
+// DeleteUnionPayData deletes UP_ACQ_TXN_DATA rows by serial number.
+func (s *oracleStore) DeleteUnionPayData(ctx context.Context, ents []*UnionPayAcqTxnDataEntity) error {
+	for _, e := range ents {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM UP_ACQ_TXN_DATA WHERE UPT_SER_NUMBER = :1`, e.SerialNumber); err != nil {
+			return err
+		}
+	}
+	return nil
 }
