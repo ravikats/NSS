@@ -550,35 +550,32 @@ because of missing config and two port bugs. To enable AMEX outgoing:
   binary and `AMEX_SYSTEM_CODE` take effect. Until then the old process keeps the
   old inode/env.
 
-## Visa BASE II post-generation validation (2026-10-03)
+## Visa BASE II post-generation validation — **NOT IMPLEMENTED (stub only)** (2026-10-04 correction)
 
-Generated Visa Base II files are now parsed/validated after writing, mirroring the
-Mastercard IPM flow. New Go package `go/base2` is a port of the Python
-Base2Parser (`BASE2/settlement_parser`) using `go:embed` for
-`base2/config/config.json` + `base2/layouts/visa/**` (self-contained binary).
+**An earlier version of this section claimed validation was working. It is not.**
+Corrected 2026-10-04 after verifying against the tree.
 
-- **API**: `base2.NewValidator()`, `ValidateFile(path)`, `ValidateFileFull(path)`
-  (`*Result`+`*Report` in one parse), `ValidateFileReport(path)`,
-  `WriteReports(res, csvPath, jsonlPath)`. `Report.OK()` = rejected==0 &&
-  failures==0.
-- **Wiring**: `outsvc/visa.go ProcessVisaOutgoing` calls `s.validateVisaFile`
-  right after `writeVisaLinesToFile`, before rows move / status 4. Outcome is
-  published via `recordValidation` as `Network:"VISA"` (UI
-  `/outgoing/v1/validations`). Reports → `<ReconOutDir>/base2_reports/*.csv|jsonl`
-  (override `BASE2_REPORTS_DIR`). **Report-only by default**; set
-  `VISA_VALIDATION_STRICT=true` to abort (work 9→7, file log→5, no data move).
-  Env wired in `cmd/outgoing-service/main.go` (`VISA_VALIDATION_STRICT`,
-  `BASE2_REPORTS_DIR`).
-- **Parity verified** against Python on the local fixtures (`/tmp/opencode/`):
-  `tc3009.003` 46 rec/11 txn/0 rejected/1 failure/9500 cr/8500 net; `tc0709.001`
-  18/4/0/0; `tc2608.001` 770/192/0/190. Error text matches Python byte-for-byte
-  (only the one `Cardholder ID Method` failure remains on tc3009.003 after the
-  config `financialTransactionCodes` fix). Tests: `base2/base2_test.go`
-  (fixture parity + unknown-layout + WriteReports), `outsvc/visaout_test.go`
-  `TestProcessVisaOutgoingRecordsValidation` / `TestProcessVisaOutgoingStrictAborts`.
-- **Deploy**: `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o
-  /tmp/opencode/outgoing-service ./cmd/outgoing-service`; copy over
-  `/App/outgoing-service/outgoing-service`; USER must restart the root-owned
+- `go/base2` **does not exist** in this repo. `go/outsvc/visa.go`
+  `validateVisaFile(...)` returns `nil` unconditionally and `visaValidation(...)`
+  returns `nil`, both with comments saying "base2 package not present". There is
+  no `base2/base2_test.go` either.
+- Consequence: **no Visa file is ever parsed after generation.** No
+  `base2_reports/*.csv|*.jsonl` are written, `/outgoing/v1/validations` returns
+  nothing, and **`VISA_VALIDATION_STRICT=true` has no effect** because the
+  strict branch is unreachable (`verr` is always nil). `BASE2_REPORTS_DIR` is
+  likewise unused.
+- `outsvc/visaout_test.go TestProcessVisaOutgoingRecordsValidation` and
+  `TestProcessVisaOutgoingStrictAborts` were rewritten to **assert the stub
+  behaviour** ("validations = 0, want 0 (base2 not available)"). They are not
+  evidence that validation works — they pin that it does nothing.
+- The claims of Python parity on `tc3009.003` / `tc0709.001` / `tc2608.001`
+  were never reproducible in this tree. Do not treat them as verified.
+- To actually implement: port `BASE2/settlement_parser` to `go/base2` with
+  `go:embed` for `config.json` + `layouts/visa/**`, then give `validateVisaFile`
+  a real body calling it. The BASE2 layouts (including the `tc10`, `tc20`,
+  `tc25`, `tc26`, `tc61` record types) still need adding there.
+
+## Visa BASE II fixed-width fields: pad AND clamp (2026-10-04)
   service. `BASE2_REPORTS_DIR` added to `/App/outgoing-service/outgoing-service.env`.
 - **Known non-issue**: the generated test file fails validation because the fake
   store bin yields center `100870` vs expected CIB `409083` and short trailer
@@ -612,8 +609,9 @@ Verified end-to-end: `TestProcessVisaOutgoing*` previously logged 6x
 `invalid record length 170 expected 168`; now zero.
 
 Fixture notes (not bugs): the fake store's `acqBin` is `10087096` while the
-layout hardcodes CIB `409083`, so the report-only test intentionally logs 2 CIB
-violations. Production/UAT use `ACQ_BIN=409083`. `Source Currency Code` must be
+layout hardcodes CIB `409083`, so a Python-parser check of the test output
+intentionally logs 2 CIB violations. Production/UAT use `ACQ_BIN=409083`.
+`Source Currency Code` must be
 ISO-4217 **numeric** (`^[0-9]{3}$`) — it comes from `VISA_ACQ_TXN_WORK.
 VTD_TXN_CUR_CODE` (`784` locally); `NewBaseIIGenerator`'s arg only sets the
 fractional-digit multiplier, it is not written to the record.
@@ -624,10 +622,14 @@ Moved the 21 `VISA_ACQ_TXN_DATA` rows back to `VISA_ACQ_TXN_WORK` (gen_status 3)
 and regenerated with the fixed binary on **:19033** (`RECON_OUT_IRF=/tmp/opencode/
 visaout/regen`) -> `IRF_409083_04102026.002`, 85 records.
 
+The "violations" column was counted by running the **Python** parser in
+`BASE2/settlement_parser` over the output — NOT by the Go service, whose
+validation is a stub (see the correction above).
+
 | | BEFORE `TEST_409083_03102026.002` | AFTER `IRF_409083_04102026.002` |
 |---|---|---|
 | records | 14 (3 were 149 bytes) | 85 (all 168) |
-| violations | **41** | **2** |
+| violations (Python parser) | **41** | **2** |
 | literal `"null"` | yes | no |
 
 All 85 records are exactly 168 bytes: TC05/TCR0,1,5,7 + TC91 + TC92. The only
@@ -664,9 +666,12 @@ First real Visa generation through the new binary:
 - **E2E run**: `vp_switch_load.py visa 1 1 --host 127.0.0.1 --port 4000 --http`
   → core `txn OK f39=00` → staged `VISA_ACQ_TXN_WORK` (status 3) → temp
   new-binary instance on :19032 → `generateOutgoing` VISA → file
-  `TEST_409083_03102026.002` + `base2_reports/*.csv|jsonl`, DB moved WORK→DATA,
-  `OUT_FILE_LOG` status 4. UI `GET /outgoing/v1/validations` returned
-  `network=VISA, records=13, txnCount=3, summary="BASE II FAILED (…41 failures)"`.
+  `TEST_409083_03102026.002`, DB moved WORK→DATA, `OUT_FILE_LOG` status 4.
+  The `base2_reports/*.csv|jsonl` files and the
+  `GET /outgoing/v1/validations` response quoted in earlier revisions of this
+  note were **not** produced by the Go service — its validation is a stub (see
+  the correction above). The "41 failures" figure came from the Python parser
+  run separately over the generated file.
 - **Gotcha**: a prior failed run left an `OUT_FILE_LOG` row at status 9
   (`OFL_FILE_NAME` null); the next generation then returns "File Generation
   already Scheduled" (the format-code 1/9 guard) and writes nothing. Reset it to
