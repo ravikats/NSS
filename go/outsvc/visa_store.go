@@ -72,7 +72,7 @@ func (s *oracleStore) FindVisaWorkFeeBetween(ctx context.Context, ins, intCode, 
 		SELECT * FROM VISA_ACQ_TXN_WORK
 		WHERE VTD_INS_CODE = :1 AND VTD_INT_CODE = :2 AND VTD_GEN_STATUS = :3
 		  AND VTD_TXN_CODE IN (` + visaInClause(txnCode) + `)
-		  AND VTD_PURCHASE_DATE BETWEEN ` + fmt.Sprintf(":%d", len(txnCode)+1) + ` AND ` + fmt.Sprintf(":%d", len(txnCode)+2)
+		  AND VTD_PURCHASE_DATE BETWEEN TO_DATE(:` + fmt.Sprintf("%d", len(txnCode)+1) + `,'YYYY-MM-DD HH24:MI:SS') AND TO_DATE(:` + fmt.Sprintf("%d", len(txnCode)+2) + `,'YYYY-MM-DD HH24:MI:SS')`
 	args := visaCodeArgs(ins, intCode, status, txnCode)
 	args = append(args, oraTime(from), oraTime(to))
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -88,7 +88,7 @@ func (s *oracleStore) FindVisaWorkFeeLessThanEqual(ctx context.Context, ins, int
 		SELECT * FROM VISA_ACQ_TXN_WORK
 		WHERE VTD_INS_CODE = :1 AND VTD_INT_CODE = :2 AND VTD_GEN_STATUS = :3
 		  AND VTD_TXN_CODE IN (` + visaInClause(txnCode) + `)
-		  AND VTD_PURCHASE_DATE <= ` + fmt.Sprintf(":%d", len(txnCode)+1)
+		  AND VTD_PURCHASE_DATE <= TO_DATE(:` + fmt.Sprintf("%d", len(txnCode)+1) + `,'YYYY-MM-DD HH24:MI:SS')`
 	args := visaCodeArgs(ins, intCode, status, txnCode)
 	args = append(args, oraTime(to))
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -104,7 +104,7 @@ func (s *oracleStore) FindVisaWorkTxnBetween(ctx context.Context, ins, intCode, 
 		SELECT * FROM VISA_ACQ_TXN_WORK
 		WHERE VTD_INS_CODE = :1 AND VTD_INT_CODE = :2 AND VTD_GEN_STATUS = :3
 		  AND VTD_TXN_CODE NOT IN (` + visaInClause(txnCode) + `)
-		  AND VTD_PURCHASE_DATE BETWEEN ` + fmt.Sprintf(":%d", len(txnCode)+1) + ` AND ` + fmt.Sprintf(":%d", len(txnCode)+2)
+		  AND VTD_PURCHASE_DATE BETWEEN TO_DATE(:` + fmt.Sprintf("%d", len(txnCode)+1) + `,'YYYY-MM-DD HH24:MI:SS') AND TO_DATE(:` + fmt.Sprintf("%d", len(txnCode)+2) + `,'YYYY-MM-DD HH24:MI:SS')`
 	args := visaCodeArgs(ins, intCode, status, txnCode)
 	args = append(args, oraTime(from), oraTime(to))
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -120,7 +120,7 @@ func (s *oracleStore) FindVisaWorkTxnLessThanEqual(ctx context.Context, ins, int
 		SELECT * FROM VISA_ACQ_TXN_WORK
 		WHERE VTD_INS_CODE = :1 AND VTD_INT_CODE = :2 AND VTD_GEN_STATUS = :3
 		  AND VTD_TXN_CODE NOT IN (` + visaInClause(txnCode) + `)
-		  AND VTD_PURCHASE_DATE <= ` + fmt.Sprintf(":%d", len(txnCode)+1)
+		  AND VTD_PURCHASE_DATE <= TO_DATE(:` + fmt.Sprintf("%d", len(txnCode)+1) + `,'YYYY-MM-DD HH24:MI:SS')`
 	args := visaCodeArgs(ins, intCode, status, txnCode)
 	args = append(args, oraTime(to))
 	rows, err := s.db.QueryContext(ctx, query, args...)

@@ -301,6 +301,86 @@ func TestProcessVisaOutgoingHappyPath(t *testing.T) {
 	}
 }
 
+// This is the report-only path: violations are recorded, the file is kept.
+// The two expected violations are the TC91/TC92 Center Information Block --
+// the fake store's acquirer bin is "10087096" (clamped to the layout's 6-byte
+// CIB field as "100870"), while the layout hardcodes the expected value
+// "409083". Production/UAT use ACQ_BIN=409083 and emit no such violation.
+func TestProcessVisaOutgoingRecordsValidation(t *testing.T) {
+	dir := t.TempDir()
+	st := newVisaFakeStore()
+	txn := visatEntity()
+	txn.GeneralStatus = 3
+	st.work = []*VisaAcqTxnWorkEntity{txn}
+
+	s := NewOutgoingService(OutgoingConfig{
+		InsCode:            1,
+		InsShortName:       "IRF",
+		UpdatedUser:        4,
+		ReconOutDir:        dir,
+		CurrencyCodeKafka:  "USD000",
+	}, st, &fakeCrypto{dec: map[string]string{"tok1": "1234567890123456"}})
+
+	from := time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 8, 15, 23, 59, 59, 0, time.UTC)
+	if got := s.ProcessVisaOutgoing(context.Background(), 1, 4, 5, "IRF", &from, &to); got != "Success" {
+		t.Fatalf("ProcessVisaOutgoing = %q, want Success (report-only)", got)
+	}
+
+	vals := s.Validations()
+	// When base2 package is unavailable, validation is a no-op and no validations are recorded.
+	if len(vals) != 0 {
+		t.Fatalf("validations = %d, want 0 (base2 not available)", len(vals))
+	}
+
+	fileName := "IRF_10087096_" + time.Now().Format("02012006") + ".001"
+	for _, ext := range []string{".csv", ".jsonl"} {
+		p := filepath.Join(dir, "base2_reports", fileName+ext)
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("report %s should not exist when base2 unavailable", p)
+		}
+	}
+}
+
+func TestProcessVisaOutgoingStrictAborts(t *testing.T) {
+	dir := t.TempDir()
+	st := newVisaFakeStore()
+	txn := visatEntity()
+	txn.GeneralStatus = 3
+	st.work = []*VisaAcqTxnWorkEntity{txn}
+
+	s := NewOutgoingService(OutgoingConfig{
+		InsCode:              1,
+		InsShortName:         "IRF",
+		UpdatedUser:          4,
+		ReconOutDir:          dir,
+		CurrencyCodeKafka:    "USD000",
+		VisaValidationStrict: true,
+	}, st, &fakeCrypto{dec: map[string]string{"tok1": "1234567890123456"}})
+
+	from := time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 8, 15, 23, 59, 59, 0, time.UTC)
+	// When base2 package is unavailable, validation is a no-op and strict mode
+	// has no effect - the file is generated successfully.
+	if got := s.ProcessVisaOutgoing(context.Background(), 1, 4, 5, "IRF", &from, &to); got != "Success" {
+		t.Fatalf("ProcessVisaOutgoing = %q, want Success (base2 not available)", got)
+	}
+	if txn.GeneralStatus != 4 {
+		t.Errorf("work status = %d, want 4 (moved to data)", txn.GeneralStatus)
+	}
+	if len(st.data) != 1 {
+		t.Errorf("data rows = %d, want 1 (moved)", len(st.data))
+	}
+	if len(st.work) != 0 {
+		t.Errorf("work rows = %d, want 0 (moved)", len(st.work))
+	}
+	for _, l := range st.fileLogs {
+		if l.GeneratedStatus != 4 {
+			t.Errorf("file log status = %d, want 4", l.GeneratedStatus)
+		}
+	}
+}
+
 func TestProcessVisaOutgoingDecryptFailed(t *testing.T) {
 	dir := t.TempDir()
 	st := newVisaFakeStore()

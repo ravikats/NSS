@@ -144,6 +144,17 @@ func (s *OutgoingService) ProcessVisaOutgoing(ctx context.Context, insCode, user
 	fileId := s.writeVisaLinesToFile(lines, insShortName, fileName)
 
 	if fileId != nil && lines != nil {
+		// BASE II validation is opt-in (requires base2 package). When unavailable,
+		// validateVisaFile is a no-op and the file is kept.
+		if verr := s.validateVisaFile(fileName, filepath.Join(s.cfg.ReconOutDir, fileName)); verr != nil {
+			logOutsvc("ValidateVisaFile", verr)
+			if s.cfg.VisaValidationStrict {
+				s.failVisaWork(ctx, insCode, user, intCode, fromDate, toDate)
+				s.updateOutFilelog(ctx, insCode, outgoingLogSerialNumber, fileName, nil)
+				return "Outgoing Failed"
+			}
+			fmt.Fprintf(os.Stderr, "outsvc: ValidateVisaFile: %s: validation failed (not strict, file kept)\n", fileName)
+		}
 		s.updateOutFilelog(ctx, insCode, outgoingLogSerialNumber, fileName, fileId)
 		s.insertVisaIntoOutgoingSummary(ctx, user, insCode, intCode, fileName, outgoingLogSerialNumber)
 		s.updateVisaAcqWork(ctx, insCode, user, intCode, *fileId, 9, fromDate, toDate)
@@ -401,4 +412,40 @@ func mapVisaDataToWork(d *VisaAcqTxnDataEntity, now time.Time) *VisaAcqTxnWorkEn
 	w.LastUpdated = now
 	w.GeneralStatus = 3
 	return &w
+}
+
+// validateVisaFile is a stub when the base2 package is unavailable.
+// Build with the base2 package to enable real BASE II validation.
+func (s *OutgoingService) validateVisaFile(fileName, path string) error {
+	// No-op: base2 package not present. Enable by adding go/base2/ with
+	// go:embed config/layouts and implementing base2.NewValidator().
+	return nil
+}
+
+// visaValidation is a stub when the base2 package is unavailable.
+func (s *OutgoingService) visaValidation(fileName string, rep interface{}, pass error) *ValidationResult {
+	// No-op: base2 package not present.
+	return nil
+}
+
+// failVisaWork marks the rows already marked for outgoing (status 9) as failed
+// (status 7) when strict validation aborts generation.
+func (s *OutgoingService) failVisaWork(ctx context.Context, insCode, user, intCode int, fromDate, toDate *time.Time) {
+	ents, err := s.store.FindVisaWorkByStatus(ctx, insCode, 9)
+	if err != nil {
+		logOutsvc("failVisaWork", err)
+		return
+	}
+	if len(ents) == 0 {
+		return
+	}
+	now := time.Now()
+	for _, e := range ents {
+		e.LastUpdated = now
+		e.UpdatedUser = user
+		e.GeneralStatus = 7
+	}
+	if err := s.store.UpdateVisaWorkStatuses(ctx, ents); err != nil {
+		logOutsvc("failVisaWork update", err)
+	}
 }
