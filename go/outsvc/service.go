@@ -2,7 +2,6 @@ package outsvc
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 )
@@ -48,6 +47,16 @@ type OutgoingConfig struct {
 	// IPMReportsDir is the directory where IPM compliance CSV/JSONL reports
 	// are written. If empty, defaults to <ReconOutDir>/ipm_reports/.
 	IPMReportsDir string
+
+	// VisaValidationStrict controls what happens when a generated Visa BASE II
+	// file fails validation. Default (false) is report-only: the outcome is
+	// logged, published to the inquiry UI and the file is kept. Set it to true
+	// to abort generation (work rows -> 7, file log -> 5).
+	VisaValidationStrict bool
+
+	// Base2ReportsDir is the directory where BASE II validation CSV/JSONL
+	// reports are written. If empty, defaults to <ReconOutDir>/base2_reports/.
+	Base2ReportsDir string
 }
 
 // OutgoingService orchestrates the outgoing file generation flow
@@ -68,14 +77,10 @@ func NewOutgoingService(cfg OutgoingConfig, store Store, crypto CardCrypto) *Out
 	s := &OutgoingService{
 		cfg:    cfg,
 		store:  store,
-		ipm:    NewIpmOutProcessor(cfg.ReconOutDir, cfg.IPMReportsDir, cfg.ProcessingMode, store, crypto),
 		crypto: crypto,
 		now:    time.Now,
 	}
-	// Publish Mastercard IPM compliance outcomes through the same in-memory
-	// history the UI already reads for Mercury EIF files.
-	s.ipm.SetValidationHook(s.recordValidation)
-	s.ipm.SetStrict(cfg.IPMValidationStrict)
+	s.ipm = NewIpmOutProcessor(cfg.ReconOutDir, cfg.IPMReportsDir, cfg.ProcessingMode, store, crypto)
 	return s
 }
 
@@ -221,128 +226,9 @@ func (s *OutgoingService) scheduleFileProcessing(ctx context.Context, insCode, u
 	}()
 }
 
-// ProcessMCOutgoing is the Go port of MCOutgoingService.processMCOutgoing.
-func (s *OutgoingService) ProcessMCOutgoing(ctx context.Context, insCode, user, formatCode int, insShortName string, fromDate, toDate *time.Time) string {
-	var fileName string
-	var processorID string
-	seqNo := 0
-	intCategory := "MCI"
-	now := time.Now()
-
-	fileFormatEntity, err := s.store.FindFileFormatBySystemCodeAndType(ctx, formatCode, "O")
-	if err != nil {
-		logOutsvc("FindFileFormatBySystemCodeAndType", err)
-		return "Failed"
-	}
-	forCode := 0
-	if fileFormatEntity != nil {
-		forCode = fileFormatEntity.Code
-	}
-	interfaces, err := s.store.FindInterfaceByCategory(ctx, intCategory)
-	if err != nil {
-		logOutsvc("FindInterfaceByCategory", err)
-		return "Failed"
-	}
-	intCode := 0
-	if interfaces != nil {
-		intCode = interfaces.InterfaceCode
-	}
-	results, err := s.store.FindFileLogByFormatCodeAndStatuses(ctx, forCode)
-	if err != nil {
-		logOutsvc("FindFileLogByFormatCodeAndStatuses", err)
-		return "Failed"
-	}
-	if len(results) > 0 {
-		return "File Generation already Scheduled"
-	}
-
-	entity := &OutGoingFileProcessingEntity{
-		LastUpdated:     now,
-		GeneratedDate:   now,
-		UpdatedUser:     user,
-		InstitutionCode: insCode,
-		InterfaceCode:   intCode,
-		FormatCode:      forCode,
-		GeneratedStatus: 9,
-	}
-	bd, err := s.store.FindBusinessDateByInstitution(ctx, insCode)
-	if err != nil {
-		logOutsvc("FindBusinessDateByInstitution", err)
-		return "Failed"
-	}
-	if bd != nil {
-		entity.BussDate = bd.BusinessDate
-	}
-	outgoingLogSerialNumber, err := s.store.InsertFileLog(ctx, entity)
-	if err != nil {
-		logOutsvc("InsertFileLog", err)
-		return "Failed"
-	}
-
-	acqBinList, err := s.store.FindAcquirerBins(ctx, insCode, "M")
-	if err != nil {
-		logOutsvc("FindAcquirerBins", err)
-		return "Failed"
-	}
-	if len(acqBinList) == 0 || acqBinList[0] == nil {
-		// Without this row the sequence can never advance, so every run would
-		// produce the same ".00" name and silently overwrite the previous file.
-		// Fail loudly instead of writing a file that destroys its predecessor.
-		logOutsvc("FindAcquirerBins", fmt.Errorf("no ACQUIRER_BINS row for bin_type=M ins=%d: cannot allocate file sequence", insCode))
-		return "Failed"
-	}
-	acq := acqBinList[0]
-	if acq.McIcaNo != nil {
-		processorID = *acq.McIcaNo
-	}
-	if acq.OutfileDate != nil && sameCalendarDay(*acq.OutfileDate, now) {
-		seqNo = acq.OutFileSeq
-	} else {
-		seqNo = 1
-	}
-	acq.OutFileSeq = seqNo + 1
-	t := now
-	acq.OutfileDate = &t
-	if err := s.store.UpdateAcquirerBin(ctx, acq); err != nil {
-		logOutsvc("UpdateAcquirerBin", err)
-		return "Failed"
-	}
-
-	fileName = insShortName + "R111" + now.Format("02012006") + fmt.Sprintf(".%02d", seqNo)
-	outFileProcEntity, err := s.store.FindFileLogByInstitutionAndSerial(ctx, insCode, outgoingLogSerialNumber)
-	if err != nil {
-		logOutsvc("FindFileLogByInstitutionAndSerial", err)
-		return "Failed"
-	}
-	outFileProcEntity.LastUpdated = now
-	outFileProcEntity.FileName = fileName
-	if err := s.store.UpdateFileLog(ctx, outFileProcEntity); err != nil {
-		logOutsvc("UpdateFileLog", err)
-		return "Failed"
-	}
-
-	fileID := s.ipm.IpmPro(ctx, fileName, processorID, seqNo, insCode, intCode, dateOnly(now), int(outgoingLogSerialNumber), user, fromDate, toDate, "")
-
-	if fileID == "" {
-		outFileProcEntity.FileId = nil
-		outFileProcEntity.GeneratedStatus = 5
-	} else {
-		fid := fileID
-		outFileProcEntity.FileId = &fid
-		outFileProcEntity.GeneratedStatus = 4
-	}
-	if err := s.store.UpdateFileLog(ctx, outFileProcEntity); err != nil {
-		logOutsvc("UpdateFileLog", err)
-		return "Failed"
-	}
-	// generateOutgoingSummaryPDF is not ported yet; summary rows are already
-	// written by the IPM processor (see buildAndSaveSummaries).
-	return "Success"
-}
-
 // RevertLastOutgoingData is the Go port of
-// OutGoingProcessingService.revertLastOutgoingData. MASTERCARD, VISA and JAYWAN
-// are ported; other networks report "Please provide valid network".
+// OutGoingProcessingService.revertLastOutgoingData. MASTERCARD, VISA, JAYWAN,
+// MERCURY, UNIONPAY are ported; other networks report "Please provide valid network".
 func (s *OutgoingService) RevertLastOutgoingData(ctx context.Context, intCategory string, insCode int) string {
 	switch intCategory {
 	case "MASTERCARD":
@@ -545,21 +431,68 @@ func (s *OutgoingService) RevertLastOutgoingData(ctx context.Context, intCategor
 			return "Revert Successfully Completed"
 		}
 		return "No Outgoing Data for the file ID"
+	case "UNIONPAY":
+		intf, err := s.store.FindInterfaceByCategory(ctx, "UNIONPAY")
+		if err != nil {
+			logOutsvc("FindInterfaceByCategory", err)
+			return "Please provide valid network"
+		}
+		intCode := 0
+		if intf != nil {
+			intCode = intf.InterfaceCode
+		}
+		fileLog, err := s.store.FindFileLogTopByStatusAndInterface(ctx, 4, intCode)
+		if err != nil {
+			logOutsvc("FindFileLogTopByStatusAndInterface", err)
+			return "Please provide valid network"
+		}
+		if fileLog == nil || fileLog.FileId == nil {
+			return "No Outgoing Data for the file ID"
+		}
+		outFileId := *fileLog.FileId
+		data, err := s.store.FindUnionPayDataByFileId(ctx, insCode, outFileId)
+		if err != nil {
+			logOutsvc("FindUnionPayDataByFileId", err)
+			return "Please provide valid network"
+		}
+		if len(data) > 0 {
+			now := time.Now()
+			work := make([]*UnionPayAcqTxnWorkEntity, 0, len(data))
+			for _, d := range data {
+				w := *d
+				w.SerialNumber = 0
+				w.GenStatus = 3
+				w.TxnDate = nil
+				w.FileProcDate = nil
+				w.FileID = ""
+				w.LastUpdated = now
+				work = append(work, &w)
+			}
+			if err := s.store.InsertUnionPayWork(ctx, work); err != nil {
+				logOutsvc("InsertUnionPayWork", err)
+				return "Please provide valid network"
+			}
+			var posCodes []int64
+			for _, d := range data {
+				if d.TxnRefNumber > 0 {
+					posCodes = append(posCodes, d.TxnRefNumber)
+				}
+			}
+			s.updatePOSData(ctx, posCodes, nil, nil, nil)
+			if err := s.store.DeleteUnionPayData(ctx, data); err != nil {
+				logOutsvc("DeleteUnionPayData", err)
+				return "Please provide valid network"
+			}
+			if err := s.store.DeleteFileLogByInstitutionAndFileIdAndInterface(ctx, insCode, outFileId, intCode); err != nil {
+				logOutsvc("DeleteFileLogByInstitutionAndFileIdAndInterface", err)
+				return "Please provide valid network"
+			}
+			return "Revert Successfully Completed"
+		}
+		return "No Outgoing Data for the file ID"
 	default:
 		return "Please provide valid network"
 	}
-}
-
-// mapMcDataToWork copies an MC data row back into a fresh work row
-// (generalStatus 3). Mirrors mapToMcAcqWorkEntity: serial number is DB-assigned
-// and txn/out-file dates are not carried over.
-func mapMcDataToWork(d *McAcqTxnDataEntity) *McAcqTxnWorkEntity {
-	w := *d
-	w.SerNumber = 0
-	w.GeneralStatus = 3
-	w.TxnDate = nil
-	w.OutFileDate = nil
-	return &w
 }
 
 // updatePOSData marks POS transactions "Marked for Outgoing" during revert.
