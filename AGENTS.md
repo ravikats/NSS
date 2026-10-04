@@ -549,3 +549,136 @@ because of missing config and two port bugs. To enable AMEX outgoing:
   `sudo /App/start_all_services.sh restart outgoing`, or stop+start) so the new
   binary and `AMEX_SYSTEM_CODE` take effect. Until then the old process keeps the
   old inode/env.
+
+## Visa BASE II post-generation validation (2026-10-03)
+
+Generated Visa Base II files are now parsed/validated after writing, mirroring the
+Mastercard IPM flow. New Go package `go/base2` is a port of the Python
+Base2Parser (`BASE2/settlement_parser`) using `go:embed` for
+`base2/config/config.json` + `base2/layouts/visa/**` (self-contained binary).
+
+- **API**: `base2.NewValidator()`, `ValidateFile(path)`, `ValidateFileFull(path)`
+  (`*Result`+`*Report` in one parse), `ValidateFileReport(path)`,
+  `WriteReports(res, csvPath, jsonlPath)`. `Report.OK()` = rejected==0 &&
+  failures==0.
+- **Wiring**: `outsvc/visa.go ProcessVisaOutgoing` calls `s.validateVisaFile`
+  right after `writeVisaLinesToFile`, before rows move / status 4. Outcome is
+  published via `recordValidation` as `Network:"VISA"` (UI
+  `/outgoing/v1/validations`). Reports → `<ReconOutDir>/base2_reports/*.csv|jsonl`
+  (override `BASE2_REPORTS_DIR`). **Report-only by default**; set
+  `VISA_VALIDATION_STRICT=true` to abort (work 9→7, file log→5, no data move).
+  Env wired in `cmd/outgoing-service/main.go` (`VISA_VALIDATION_STRICT`,
+  `BASE2_REPORTS_DIR`).
+- **Parity verified** against Python on the local fixtures (`/tmp/opencode/`):
+  `tc3009.003` 46 rec/11 txn/0 rejected/1 failure/9500 cr/8500 net; `tc0709.001`
+  18/4/0/0; `tc2608.001` 770/192/0/190. Error text matches Python byte-for-byte
+  (only the one `Cardholder ID Method` failure remains on tc3009.003 after the
+  config `financialTransactionCodes` fix). Tests: `base2/base2_test.go`
+  (fixture parity + unknown-layout + WriteReports), `outsvc/visaout_test.go`
+  `TestProcessVisaOutgoingRecordsValidation` / `TestProcessVisaOutgoingStrictAborts`.
+- **Deploy**: `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o
+  /tmp/opencode/outgoing-service ./cmd/outgoing-service`; copy over
+  `/App/outgoing-service/outgoing-service`; USER must restart the root-owned
+  service. `BASE2_REPORTS_DIR` added to `/App/outgoing-service/outgoing-service.env`.
+- **Known non-issue**: the generated test file fails validation because the fake
+  store bin yields center `100870` vs expected CIB `409083` and short trailer
+  records — that is why report-only is the default.
+
+### Visa BASE II fixed-width fields: pad AND clamp (2026-10-04)
+
+Every Base II record is exactly 168 bytes (`base2/config/config.json`
+`recordLength`, and every `base2/layouts/visa/**` layout). Two separate classes
+of bug were breaking that and making the parser reject whole files:
+
+1. **Empty input emitted `"null"`.** `rpad`/`lpad`/`jstr` returned the 4-char
+   string `"null"` instead of n pad characters, so any blank field silently
+   shortened the record by `n-4` and shifted every later field (e.g. `Source
+   Amount ... got 'MERCHANT'`). Fixed: helpers now blank-pad; added `orSpace`.
+2. **Pad-without-clamp lengthened the record.** Java's `StringUtils.leftPad`
+   returns the input unchanged when it is LONGER than the width, so
+   over-long values (15-char `BussAppId`, 8-char `acqBin`, 16-char PAN in a
+   6-byte field) produced 170/181/193-byte records. Fixed by clamping each
+   fixed-width site with `sleft(...)`/`sright(...)`. Affected: fee-record card
+   number + `acqBin`, AFT `BussAppId`, `TxnCurCode`, `TxnId`, and **both
+   footers** (`generateFooter91`/`92` insert `acqBin` for the 6-byte CIB).
+
+**Why this hid for so long:** `TestBaseIIRecordLengths` *documented the bug as
+intended* ("Java leftPad does not truncate ... make it 193") and asserted 193/181.
+If a test asserts a wrong width, the code is wrong, not the test.
+
+Guards (all proven to fail on the pre-fix code):
+`TestBaseIIRecordWidths`, `TestTcr0EmptyArnKeepsWidth`, `TestBaseIIHelpers`.
+Verified end-to-end: `TestProcessVisaOutgoing*` previously logged 6x
+`invalid record length 170 expected 168`; now zero.
+
+Fixture notes (not bugs): the fake store's `acqBin` is `10087096` while the
+layout hardcodes CIB `409083`, so the report-only test intentionally logs 2 CIB
+violations. Production/UAT use `ACQ_BIN=409083`. `Source Currency Code` must be
+ISO-4217 **numeric** (`^[0-9]{3}$`) — it comes from `VISA_ACQ_TXN_WORK.
+VTD_TXN_CUR_CODE` (`784` locally); `NewBaseIIGenerator`'s arg only sets the
+fractional-digit multiplier, it is not written to the record.
+
+### Visa regeneration re-verified after the width fix (2026-10-04)
+
+Moved the 21 `VISA_ACQ_TXN_DATA` rows back to `VISA_ACQ_TXN_WORK` (gen_status 3)
+and regenerated with the fixed binary on **:19033** (`RECON_OUT_IRF=/tmp/opencode/
+visaout/regen`) -> `IRF_409083_04102026.002`, 85 records.
+
+| | BEFORE `TEST_409083_03102026.002` | AFTER `IRF_409083_04102026.002` |
+|---|---|---|
+| records | 14 (3 were 149 bytes) | 85 (all 168) |
+| violations | **41** | **2** |
+| literal `"null"` | yes | no |
+
+All 85 records are exactly 168 bytes: TC05/TCR0,1,5,7 + TC91 + TC92. The only
+remaining 2 violations are `Authorization code must be present`, and they are
+**source data, not the generator**: `SELECT COUNT(VTD_APPR_CODE),
+SUM(CASE WHEN TRIM(VTD_APPR_CODE) IS NULL...)` on the 21 staged rows gives 20
+present / 2 blank, matching the 2 empty fields 1:1.
+
+Reversing the fix makes the guards fail, so they are real guards:
+`rpad`->`"null"` (tcr0 140 / additionalData 157 / fee 102), `jstr` for
+TerminalCapability (tcr0 171), fee card unclamped (fee 191), AFT `BussAppId`
+unclamped (aft 166).
+
+## Visa generation E2E + `visa_store.go` date-bind bug (2026-10-03)
+
+First real Visa generation through the new binary:
+
+- **Bug fixed**: `outsvc/visa_store.go` `FindVisaWorkFeeBetween` /
+  `FindVisaWorkFeeLessThanEqual` / `FindVisaWorkTxnBetween` /
+  `FindVisaWorkTxnLessThanEqual` bound the purchase-date literals **bare**
+  (`... BETWEEN :4 AND :5`), so Oracle applied the session NLS format and raised
+  `ORA-01861: literal does not match format string` (the MC `getTxnCount` and the
+  first Visa queries already wrap `TO_DATE(:N,'YYYY-MM-DD HH24:MI:SS')`). Wrapped
+  all four. Never surfaced before because the earlier attempt died at
+  `InsertFileLog` (FK) before reaching the fee query.
+- **Local Visa config seeded** (`replica/visa_staging_setup.sql`, idempotent):
+  `FILE_FORMATS` system 117 type 'O' (FOR_CODE is GENERATED ALWAYS identity →
+  omit it) and `ACQUIRER_BINS` `409083` bin_type 'V' (fabricated; CIB 409083
+  matches switch DE32/DE33 and the BASE II trailer check). `VISA_SYSTEM_CODE=117`
+  added to `/App/outgoing-service/outgoing-service.env` (was missing → forCode 0 →
+  `FK_OFL_FOR_CODE` ORA-02291). Missing either of these = "Scheduled
+  Successfully" reply but no file (the reply is returned before the background
+  generation, so it is NOT a success indicator; check `/App/logs/outgoing.log`).
+- **E2E run**: `vp_switch_load.py visa 1 1 --host 127.0.0.1 --port 4000 --http`
+  → core `txn OK f39=00` → staged `VISA_ACQ_TXN_WORK` (status 3) → temp
+  new-binary instance on :19032 → `generateOutgoing` VISA → file
+  `TEST_409083_03102026.002` + `base2_reports/*.csv|jsonl`, DB moved WORK→DATA,
+  `OUT_FILE_LOG` status 4. UI `GET /outgoing/v1/validations` returned
+  `network=VISA, records=13, txnCount=3, summary="BASE II FAILED (…41 failures)"`.
+- **Gotcha**: a prior failed run left an `OUT_FILE_LOG` row at status 9
+  (`OFL_FILE_NAME` null); the next generation then returns "File Generation
+  already Scheduled" (the format-code 1/9 guard) and writes nothing. Reset it to
+  5 before retrying. The temp ravi instance cannot write `/vp-switch/OUTPUT`
+  (root-owned 755) — run with `RECON_OUT_<INSSHORT>` pointing at a writable dir.
+- **CORRECTION (2026-10-04) — the old "synthetic-row caveat" above was WRONG.**
+  The 149-char TCR0 records were NOT caused by a sparse staged row. `rpad`/
+  `lpad`/`jstr` returned the literal string `"null"` for an empty input, so
+  `rpad(e.Arn, 23, " ")` emitted 4 bytes instead of 23 and shifted every
+  following field. Real UAT never showed it only because ARN is always
+  populated there. Fixed in `baseii.go` (blank-pad + `orSpace`), so the same
+  sparse row now yields a full 168-byte record. Do not re-add that caveat.
+- **Deployed**: new binary written to `/App/outgoing-service/outgoing-service`
+  (md5 `c2d48651edb0c55e71edb04caaad825d`). The running process is root-owned;
+  **USER must restart** to activate the binary + `VISA_SYSTEM_CODE`.
