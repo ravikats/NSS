@@ -16,7 +16,7 @@ func visatEntity() *VisaAcqTxnWorkEntity {
 		PurchaseDate:           pt(time.Date(2026, 8, 15, 10, 30, 0, 0, time.UTC)),
 		TxnAmount:              100.5,
 		SchgAmount:             1.25,
-		TxnCurCode:             "USD",
+		TxnCurCode:             "784", // ISO 4217 numeric; layout requires ^[0-9]{3}$ (DB holds 784)
 		MeName:                 "MERCHANT",
 		MeCity:                 "DUBAI",
 		MeCountry:              "AE",
@@ -79,11 +79,20 @@ func TestBaseIIHelpers(t *testing.T) {
 	if got := jstr("x"); got != "x" {
 		t.Errorf("jstr(x) = %q", got)
 	}
-	if got := rpad("", 23, " "); got != "null" {
-		t.Errorf("rpad empty = %q, want null", got)
+	if got := rpad("", 23, " "); got != strings.Repeat(" ", 23) {
+		t.Errorf("rpad empty = %q, want 23 spaces (a null field is blank, not the text \"null\")", got)
 	}
-	if got := lpad("", 6, " "); got != "null" {
-		t.Errorf("lpad empty = %q, want null", got)
+	if got := lpad("", 6, " "); got != strings.Repeat(" ", 6) {
+		t.Errorf("lpad empty = %q, want 6 spaces", got)
+	}
+	if got := lpad("", 15, "0"); got != strings.Repeat("0", 15) {
+		t.Errorf("lpad empty zeros = %q, want 15 zeros", got)
+	}
+	if got := orSpace("", 4); got != "    " {
+		t.Errorf("orSpace empty = %q, want 4 spaces", got)
+	}
+	if got := orSpace("x", 4); got != "x" {
+		t.Errorf("orSpace(x) = %q, want x unchanged", got)
 	}
 	if got := sleftPad("123", 12, "0"); got != "000000000123" {
 		t.Errorf("sleftPad = %q", got)
@@ -118,16 +127,18 @@ func TestBaseIIRecordLengths(t *testing.T) {
 	if line := g.getChipCardTxnData(e); len(line) != 168 {
 		t.Errorf("chipCardTxnData len = %d, want 168", len(line))
 	}
-	// feeCollection width depends on input lengths (Java leftPad does not
-	// truncate): 16-char card (leftPad 6->16, 16->16, 3->16) and 8-char acqBin
-	// (leftPad 6->8) make it 168 + (16-6) + (16-3) + (8-6) = 193.
-	if line := g.getFeeCollection(e, "1234567890123456", "10087096", "0815"); len(line) != 193 {
-		t.Errorf("feeCollection len = %d, want 193", len(line))
+	// Every Base II record is a fixed 168 bytes (base2/config/config.json
+	// recordLength, and every visa layout). These used to assert 193 for the fee
+	// record and 181 for AFT, documenting -- and locking in -- the fact that
+	// Java's leftPad pads without truncating, so an over-long input lengthened
+	// the record and the parser rejected the file. Widths are now clamped.
+	if line := g.getFeeCollection(e, "1234567890123456", "10087096", "0815"); len(line) != 168 {
+		t.Errorf("feeCollection len = %d, want 168 (8-char acqBin must be clamped to 6)", len(line))
 	}
 	aft := *e
 	aft.BussAppId = "ABCDEFGHIJKLMNO"
-	if line := g.getAFTData(&aft); len(line) != 181 {
-		t.Errorf("AFT len = %d, want 181", len(line))
+	if line := g.getAFTData(&aft); len(line) != 168 {
+		t.Errorf("AFT len = %d, want 168 (Business Application ID must be clamped to 2)", len(line))
 	}
 	_ = dec
 }
@@ -180,15 +191,17 @@ func TestBaseIIRecordContents(t *testing.T) {
 	}
 
 	aft := *e
-	aft.BussAppId = "B2C"
+	aft.BussAppId = "B2C" // over-width on purpose: the field is 2 bytes
 	aft.SenderAccount = "ACC"
 	aft.SenderName = "NAME"
 	aftLine := g.getAFTData(&aft)
 	if !strings.HasPrefix(aftLine, "0513") {
 		t.Errorf("AFT prefix = %q, want 0513", aftLine[:4])
 	}
-	if !strings.Contains(aftLine, "CRB2C") {
-		t.Error("AFT missing businessFormatCodeCR+BussAppId")
+	// Bytes 17-18 Business Format Code, 19-20 Business Application ID
+	// (clamped to 2), 21 Source of Funds. Real UAT carries "CRPS3".
+	if got := aftLine[16:21]; got != "CRB23" {
+		t.Errorf("AFT business format/app id = %q, want \"CRB23\" (app id clamped to 2)", got)
 	}
 }
 
@@ -289,5 +302,107 @@ func TestGetAuthorizationCharInd(t *testing.T) {
 		if got := g.getAuthorizationCharInd(c.auth, c.ecom); got != c.want {
 			t.Errorf("auth=%q ecom=%q => %q, want %q", c.auth, c.ecom, got, c.want)
 		}
+	}
+}
+
+// base2RecordLength is the fixed width of every Base II record, per
+// base2/config/config.json ("recordLength": 168) and every layout under
+// base2/layouts/visa/**. A record of any other length invalidates the whole
+// file: the parser rejects it and every field after the short one shifts left.
+const base2RecordLength = 168
+
+// TestBaseIIRecordWidths pins every record builder to exactly
+// base2RecordLength bytes. It runs twice: once fully populated, and once with
+// the optional fields cleared, because the width bugs only fired on the
+// null/empty path.
+//
+// Regression: rpad/lpad returned the literal "null" (4 chars) for an empty
+// input, and jstr did the same at fixed-width positions. A Visa transaction
+// with no ARN therefore produced a 149-byte TCR0 (23-4=19 lost) which cascaded
+// into every downstream field of that record being misparsed.
+func TestBaseIIRecordWidths(t *testing.T) {
+	clearOptional := func(e *VisaAcqTxnWorkEntity) *VisaAcqTxnWorkEntity {
+		e.Arn = ""
+		e.MerchantId = ""
+		e.TxnId = ""
+		e.TxnCurCode = ""
+		e.Mcc = ""
+		e.TerminalCapability = ""
+		e.RespCode = ""
+		e.MeCity = ""
+		e.MeName = ""
+		e.MeCountry = ""
+		e.TxnCode = ""
+		e.ApprovalCode = ""
+		e.ChIdMethod = ""
+		e.PosEntryMode = ""
+		return e
+	}
+
+	for _, tc := range []struct {
+		name string
+		ent  func() *VisaAcqTxnWorkEntity
+	}{
+		{"populated", visatEntity},
+		{"nulls", func() *VisaAcqTxnWorkEntity { return clearOptional(visatEntity()) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewBaseIIGenerator("AED")
+			e := tc.ent()
+			card := "4104999999999999"
+
+			builders := map[string]string{
+				"tcr0":               g.getTcr0(e, card),
+				"additionalData":     g.getAdditionalData(e),
+				"paymentServiceData": g.getPaymentServiceData(e),
+				"chipCardTxnData":    g.getChipCardTxnData(e),
+				"aftData":            g.getAFTData(e),
+				"footer91":           g.generateFooter91("409083", 1, "26276"),
+				"footer92":           g.generateFooter92("409083"),
+			}
+			for name, rec := range builders {
+				if len(rec) != base2RecordLength {
+					t.Errorf("%s: len = %d, want %d (delta %+d)\n  record: %q",
+						name, len(rec), base2RecordLength, len(rec)-base2RecordLength, rec)
+				}
+				if strings.Contains(rec, "null") {
+					t.Errorf("%s: contains the literal \"null\": %q", name, rec)
+				}
+			}
+
+			// feeCollection needs a txn code of 10/20 to be meaningful.
+			fee := tc.ent()
+			fee.TxnCode = "10"
+			rec := g.getFeeCollection(fee, card, "409083", "1003")
+			if len(rec) != base2RecordLength {
+				t.Errorf("feeCollection: len = %d, want %d (delta %+d)\n  record: %q",
+					len(rec), base2RecordLength, len(rec)-base2RecordLength, rec)
+			}
+			if strings.Contains(rec, "null") {
+				t.Errorf("feeCollection: contains the literal \"null\": %q", rec)
+			}
+		})
+	}
+}
+
+// TestTcr0EmptyArnKeepsWidth is the narrow regression for the shipped bug: a
+// transaction whose ARN is absent must still yield a full-width record, with
+// the ARN field blank rather than the text "null".
+func TestTcr0EmptyArnKeepsWidth(t *testing.T) {
+	g := NewBaseIIGenerator("AED")
+	e := visatEntity()
+	e.Arn = ""
+	rec := g.getTcr0(e, "4104999999999999")
+	if len(rec) != base2RecordLength {
+		t.Fatalf("len = %d, want %d", len(rec), base2RecordLength)
+	}
+	// Acquirer Reference Number occupies positions 27-49.
+	if got := rec[26:49]; got != strings.Repeat(" ", 23) {
+		t.Errorf("ARN field = %q, want 23 spaces", got)
+	}
+	// Trailing fields must not have shifted: Reimbursement Attribute is the
+	// last byte of the record.
+	if got := rec[167]; got != 'B' {
+		t.Errorf("last byte (Reimbursement Attribute) = %q, want \"B\"", got)
 	}
 }

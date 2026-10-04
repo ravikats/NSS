@@ -94,22 +94,41 @@ func jstr(s string) string {
 	return s
 }
 
-// rpad mirrors StringUtils.rightPad with Java null semantics: a null input
-// yields the literal "null" (rightPad(null) returns null, and the subsequent
-// string concat prints "null"), rather than a padded empty field.
+// rpad right-pads s to n characters with c. A null/empty input yields n pad
+// characters, NOT the literal "null".
+//
+// These helpers used to return the 4-character string "null" for an empty
+// input, mirroring Java's String + null concatenation. That is wrong for
+// fixed-width records: "null" is shorter than the field, so the record came
+// out short and every following field shifted left. A Base II record must be
+// exactly recordLength bytes or Visa rejects the whole file -- e.g. a Visa
+// transaction with no ARN produced a 149-byte TCR0 instead of 168 (23-4=19
+// bytes lost), which cascaded into ~15 validation failures on that record.
+// A null field is an empty field: pad it.
 func rpad(s string, n int, c string) string {
 	if s == "" {
-		return "null"
+		return strings.Repeat(c, n)
 	}
 	return srightPad(s, n, c)
 }
 
-// lpad mirrors StringUtils.leftPad with Java null semantics (see rpad).
+// lpad left-pads s to n characters with c; a null/empty input yields n pad
+// characters (see rpad for why "null" is wrong here).
 func lpad(s string, n int, c string) string {
 	if s == "" {
-		return "null"
+		return strings.Repeat(c, n)
 	}
 	return sleftPad(s, n, c)
+}
+
+// orSpace returns s, or n spaces when s is null/empty. Use it instead of jstr
+// at fixed-width record positions: jstr emits the 4-character literal "null",
+// which both corrupts content and, at widths below 4, lengthens the record.
+func orSpace(s string, n int) string {
+	if s == "" {
+		return srep(" ", n)
+	}
+	return s
 }
 
 // amtToInt converts a currency amount to its minor-unit integer using the
@@ -326,13 +345,13 @@ func (g *BaseIIGenerator) getTcr0(e *VisaAcqTxnWorkEntity, card string) string {
 		merchantName +
 		sleft(rpad(e.MeCity, 13, " "), 13) +
 		srightPad(orDef(e.MeCountry, ""), 3, " ") +
-		sleft(jstr(e.Mcc)+srep(" ", 4), 4) +
+		sleft(orSpace(e.Mcc, 4), 4) +
 		srep("0", 5) + srep(" ", 3) +
 		"9" + " " +
 		"1" + "00" + "9" +
 		g.getAuthorizationCharInd(e.AuthCharIndicator, e.MotoEcomIndicator) +
 		sleft(orDef(e.ApprovalCode, "")+srep(" ", 6), 6) +
-		jstr(e.TerminalCapability) +
+		orSpace(e.TerminalCapability, 1) +
 		" " + orDef(e.ChIdMethod, " ") + " " +
 		sleft(orDef(e.PosEntryMode, "")+srep(" ", 2), 2) +
 		centralProcDate +
@@ -391,7 +410,7 @@ func (g *BaseIIGenerator) getPaymentServiceData(e *VisaAcqTxnWorkEntity) string 
 		sright(lpad(e.TxnId, 15, "0"), 15) +
 		sleftPad(fmt.Sprintf("%d", authAmount), 12, "0") +
 		sleft(orDef(e.TxnCurCode, "")+srep(" ", 3), 3) +
-		sright("00"+jstr(e.RespCode), 2) +
+		sright("00"+orSpace(e.RespCode, 2), 2) +
 		orDef(e.ValidationCode, srep(" ", 4)) +
 		" " + " " + srep(" ", 2) +
 		"01" + "01" +
@@ -451,31 +470,31 @@ func (g *BaseIIGenerator) getChipCardTxnData(e *VisaAcqTxnWorkEntity) string {
 // getFeeCollection mirrors getFeeCollection + getFeeCollectionformat (txn codes
 // 10/20 fee records).
 func (g *BaseIIGenerator) getFeeCollection(e *VisaAcqTxnWorkEntity, card, acqBin, eventDate string) string {
-	return jstr(e.TxnCode) +
+	return orSpace(e.TxnCode, 2) +
 		"0" + "0" +
-		sleftPad(card, 6, " ") +
-		lpad(acqBin, 6, " ") +
+		sleft(card, 6) +
+		sleft(lpad(acqBin, 6, " "), 6) +
 		srep("0", 4) + srep(" ", 3) +
 		eventDate +
 		sleftPad(card, 16, "0") +
-		sleftPad(card, 3, "0") +
+		sright(srightPad(card, 19, "0"), 3) +
 		srep("0", 12) + srep(" ", 3) +
 		sleftPad(fmt.Sprintf("%d", amtToInt(e.TxnAmount, g.multiplier)), 12, "0") +
-		lpad(e.TxnCurCode, 3, " ") +
+		sleft(lpad(e.TxnCurCode, 3, " "), 3) +
 		rpad(e.Arn, 70, " ") +
 		"9" +
-		lpad(e.TxnId, 15, "0") +
+		sleft(lpad(e.TxnId, 15, "0"), 15) +
 		" " + srep("0", 4) + "B"
 }
 
 // getAFTData mirrors getAFTData + getAFTDataformat (Account Funding
 // Transactions; only when bussAppId present and txnCode 05).
 func (g *BaseIIGenerator) getAFTData(e *VisaAcqTxnWorkEntity) string {
-	return jstr(e.TxnCode) +
+	return orSpace(e.TxnCode, 2) +
 		"1" + "3" +
 		"00" +
 		srep(" ", 9) + " " +
-		"CR" + e.BussAppId + "3" +
+		"CR" + sleft(orDef(e.BussAppId, "")+srep(" ", 2), 2) + "3" +
 		srep(" ", 2) + srep(" ", 16) +
 		sleft(orDef(e.SenderAccount, "")+srep(" ", 34), 34) +
 		sleft(orDef(e.SenderName, "")+srep(" ", 30), 30) +
@@ -504,7 +523,7 @@ func (g *BaseIIGenerator) getAuthorizationCharInd(authorizationInd, ecomIndicato
 func (g *BaseIIGenerator) generateFooter91(acqBin string, fileSeq int, jDate string) string {
 	g.batchNumber++
 	g.allTcrCount92++
-	footer := "91" + "00" + acqBin +
+	footer := "91" + "00" + sleft(acqBin, 6) +
 		srep("0", 5) + srep("0", 15) +
 		sright(sleftPad(fmt.Sprintf("%d", g.txnCount91), 12, "0"), 12) +
 		sright(sleftPad(fmt.Sprintf("%d", g.batchNumber), 6, "0"), 6) +
@@ -527,7 +546,7 @@ func (g *BaseIIGenerator) generateFooter91(acqBin string, fileSeq int, jDate str
 
 // generateFooter92 mirrors BaseIIOutgoingServiceImpl.generateFooter92.
 func (g *BaseIIGenerator) generateFooter92(acqBin string) string {
-	footer := "92" + "00" + acqBin +
+	footer := "92" + "00" + sleft(acqBin, 6) +
 		srep("0", 5) + srep("0", 15) +
 		sright(sleftPad(fmt.Sprintf("%d", g.txnCount92), 12, "0"), 12) +
 		sright(sleftPad(fmt.Sprintf("%d", g.batchNumber), 6, "0"), 6) +
