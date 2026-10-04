@@ -117,6 +117,9 @@ func main() {
 		// Report-only by default: see OutgoingConfig.VisaValidationStrict.
 		VisaValidationStrict: env("VISA_VALIDATION_STRICT", "") == "true" || env("VISA_VALIDATION_STRICT", "") == "1",
 		Base2ReportsDir:      env("BASE2_REPORTS_DIR", ""),
+		// Report-only by default: see OutgoingConfig.UnionPayValidationStrict.
+		UnionPayValidationStrict:    env("UNIONPAY_VALIDATION_STRICT", "") == "true" || env("UNIONPAY_VALIDATION_STRICT", "") == "1",
+		UnionPayValidationReportDir: env("UNIONPAY_VALIDATION_REPORT_DIR", ""),
 	}
 
 	crypto := outsvc.NewCryptoClient(outsvc.CryptoConfig{

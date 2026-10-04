@@ -2,6 +2,7 @@ package outsvc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"empay/irf/upval"
 )
 
 // UnionPay outgoing constants per the UnionPay "Technical Specifications on
@@ -177,6 +180,19 @@ func (s *OutgoingService) ProcessUnionPayOutgoing(ctx context.Context, insCode, 
 			return "Outgoing Failed"
 		}
 
+		// Validate the generated file BEFORE any rows move and before the file
+		// log is marked complete, so a malformed file never reaches the rows or
+		// the settlement cycle. Report-only by default; UNIONPAY_VALIDATION_STRICT
+		// aborts (work stays 9, file log -> failure).
+		if rep := s.validateUnionPayFile(fileName, insShortName); rep != nil && !rep.OK() {
+			if s.cfg.UnionPayValidationStrict {
+				s.updateOutFilelog(ctx, insCode, outgoingLogSerialNumber, fileName, nil)
+				return "Outgoing Failed"
+			}
+			fmt.Fprintf(os.Stderr, "outsvc: UnionPay validation: %s: %d issue(s), file kept\n",
+				fileName, len(rep.Issues))
+		}
+
 		fid := fileId
 		s.updateOutFilelog(ctx, insCode, outgoingLogSerialNumber, fileName, &fid)
 
@@ -318,6 +334,50 @@ func (s *OutgoingService) moveUnionPayWorkToData(ctx context.Context, insCode, u
 	}
 	if err := s.store.DeleteUnionPayWork(ctx, workEntities); err != nil {
 		logOutsvc("DeleteUnionPayWork", err)
+	}
+}
+
+// validateUnionPayFile validates a generated settlement file and records the
+// outcome for the inquiry UI (GET /outgoing/v1/validations). Returns nil when
+// the file cannot be read, so a missing file is not double-reported.
+func (s *OutgoingService) validateUnionPayFile(fileName, insShortName string) *upval.Report {
+	path := filepath.Join(s.cfg.ReconOutDir, fileName)
+	rep, err := upval.ValidateFile(path)
+	if err != nil {
+		logOutsvc("validateUnionPayFile", err)
+		return nil
+	}
+	res := &ValidationResult{
+		Network:     "UNIONPAY",
+		File:        fileName,
+		Records:     rep.Records,
+		TxnCount:    rep.Transactions,
+		OK:          rep.OK(),
+		Errors:      rep.Issues,
+		Summary:     rep.Summary(),
+		ValidatedAt: s.now(),
+	}
+	s.recordValidation(res)
+	s.writeUnionPayValidationReport(rep)
+	return rep
+}
+
+// writeUnionPayValidationReport writes the machine-readable issue list next to
+// the settlement file (override with UNIONPAY_VALIDATION_REPORT_DIR).
+func (s *OutgoingService) writeUnionPayValidationReport(rep *upval.Report) {
+	dir := s.cfg.UnionPayValidationReportDir
+	if dir == "" {
+		dir = filepath.Join(s.cfg.ReconOutDir, "unionpay_validation")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		logOutsvc("writeUnionPayValidationReport", err)
+		return
+	}
+	jsonPath := filepath.Join(dir, rep.File+".validation.json")
+	if data, err := json.MarshalIndent(rep, "", "  "); err == nil {
+		if err := os.WriteFile(jsonPath, data, 0o644); err != nil {
+			logOutsvc("writeUnionPayValidationReport", err)
+		}
 	}
 }
 

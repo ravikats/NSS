@@ -57,6 +57,16 @@ type OutgoingConfig struct {
 	// Base2ReportsDir is the directory where BASE II validation CSV/JSONL
 	// reports are written. If empty, defaults to <ReconOutDir>/base2_reports/.
 	Base2ReportsDir string
+
+	// UnionPayValidationStrict controls what happens when a generated UnionPay
+	// settlement file fails validation. Default (false) is report-only, matching
+	// Visa: the outcome is logged, published to the inquiry UI and the file is
+	// kept. Set it to true to abort generation (work rows stay 9, file log -> 5).
+	UnionPayValidationStrict bool
+
+	// UnionPayValidationReportDir is where the UnionPay validation JSON report is
+	// written. If empty, defaults to <ReconOutDir>/unionpay_validation/.
+	UnionPayValidationReportDir string
 }
 
 // OutgoingService orchestrates the outgoing file generation flow
