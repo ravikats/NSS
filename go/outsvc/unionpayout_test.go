@@ -13,16 +13,16 @@ import (
 // ProcessUnionPayOutgoing success/failure paths.
 type unionpayFakeStore struct {
 	Store
-	work       []*UnionPayAcqTxnWorkEntity
-	data       []*UnionPayAcqTxnDataEntity
-	fileLogs   []*OutGoingFileProcessingEntity
-	nextSerial int64
-	acqBin     *AcquirerBinsEntity
-	interfaces *InterfacesEntity
-	format     *FileFormatsEntity
+	work         []*UnionPayAcqTxnWorkEntity
+	data         []*UnionPayAcqTxnDataEntity
+	fileLogs     []*OutGoingFileProcessingEntity
+	nextSerial   int64
+	acqBin       *AcquirerBinsEntity
+	interfaces   *InterfacesEntity
+	format       *FileFormatsEntity
 	businessDate *BusinessDateEntity
-	summaries  []*OutgoingSummaryEntity
-	posDone    bool
+	summaries    []*OutgoingSummaryEntity
+	posDone      bool
 }
 
 func (f *unionpayFakeStore) FindFileFormatBySystemCodeAndType(ctx context.Context, sysCode int, typ string) (*FileFormatsEntity, error) {
@@ -163,11 +163,11 @@ func newUnionPayFakeStore() *unionpayFakeStore {
 	return &unionpayFakeStore{
 		nextSerial: 0,
 		acqBin: &AcquirerBinsEntity{
-			Bin:               "970962",
-			InstitutionCode:   1,
-			BinType:           "U",
-			OutFileSeq:        0,
-			McIcaNo:           &ica,
+			Bin:             "970962",
+			InstitutionCode: 1,
+			BinType:         "U",
+			OutFileSeq:      0,
+			McIcaNo:         &ica,
 		},
 		interfaces: &InterfacesEntity{InterfaceCode: 15},
 		format:     &FileFormatsEntity{Code: 12},
@@ -200,7 +200,7 @@ func unionpayEntity() *UnionPayAcqTxnWorkEntity {
 		TxnCurCode:           "784",
 		StanNumber:           "123456",
 		OrgInstIdCode:        "100000",
-		AcqinstIdCode:        "200000",
+		AcqinstIdCode:        "24160784",
 		FwdInstIdCode:        "300000",
 		AcqRefData:           "REF123",
 		ResponseCode:         "00",
@@ -293,6 +293,14 @@ func TestProcessUnionPayOutgoingHappyPath(t *testing.T) {
 	}
 	if !strings.Contains(content, "6212345678901234") {
 		t.Errorf("decrypted PAN not found in output")
+	}
+	// The TC000 header IIN must come from the transactions' acquiring IIN
+	// (ISO Field 32), NOT from ACQUIRER_BINS.ACQ_MC_ICA_NO -- that column is
+	// VARCHAR2(6) and holds 034540 (Mercury's) for the 'U' bin, while a real
+	// UAT file carries 24160784.
+	lines0 := strings.Split(strings.TrimSpace(content), "\r\n")
+	if got := lines0[0][7:18]; got != "24160784   " {
+		t.Errorf("header IIN = %q, want '24160784   ' (not the 6-char bin ICA)", got)
 	}
 
 	// Should have 2 transaction records + header + trailer = 4 lines

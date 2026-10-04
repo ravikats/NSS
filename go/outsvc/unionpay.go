@@ -42,6 +42,21 @@ const (
 	unionPayOrigAuthFixed = "100"          // n3, original auth fixed-amount
 	unionPayOrigAuthNone  = "   "          // n3, spaces on a TC101 refund
 
+	// Block 1 positions 76-78: abbreviation of international organization.
+	// UnionPay International is CUP. This is NOT blank -- a real UAT file
+	// (OFC26090851C) carries "CUP" on every transaction record.
+	unionPayOrgCodeCUP = "CUP"
+
+	// Block 2 position 23 terminal entry capability (ISO F60.2.2, an1).
+	// Mandatory; the manual's default when it cannot be captured from the
+	// authorization is "0" (unknown). Observed "0" in the UAT file.
+	unionPayEntryCapUnknown = "0"
+
+	// Block 2 position 24 IC card condition code (ISO F60.2.3, an1): "2" when
+	// the entry mode indicates a fallback read, otherwise "0".
+	unionPayICCondFallback = "2"
+	unionPayICCondNormal   = "0"
+
 	// Transaction codes. A refund (processing code 20xx) is TC101 and carries
 	// bitmap C000 -- Block 2 is not present on a refund record.
 	unionPayTC100 = "100" // sale / original authorization
@@ -92,9 +107,10 @@ func (s *OutgoingService) ProcessUnionPayOutgoing(ctx context.Context, insCode, 
 		return "Acquirer bin not found"
 	}
 	acqBin := acqBinList[0]
-	iin := unionPayIIN
+	// Fallback only: the header IIN normally comes from the transactions.
+	acqBinIIN := unionPayIIN
 	if acqBin.McIcaNo != nil {
-		iin = *acqBin.McIcaNo
+		acqBinIIN = *acqBin.McIcaNo
 	}
 
 	var txnList []*UnionPayAcqTxnWorkEntity
@@ -155,7 +171,7 @@ func (s *OutgoingService) ProcessUnionPayOutgoing(ctx context.Context, insCode, 
 			return "Failed"
 		}
 
-		fileId := s.writeUnionPayFile(ctx, fileTxns, insShortName, fileName, iin, response)
+		fileId := s.writeUnionPayFile(ctx, fileTxns, insShortName, fileName, acqBinIIN, response)
 		if fileId == "" {
 			s.updateOutFilelog(ctx, insCode, outgoingLogSerialNumber, fileName, nil)
 			return "Outgoing Failed"
@@ -308,7 +324,7 @@ func (s *OutgoingService) moveUnionPayWorkToData(ctx context.Context, insCode, u
 // writeUnionPayFile builds the sequential file (TC000 + TC100/101/102 +
 // TC001) and writes it to RECON_OUT_{insShortName}/{fileName} with CRLF
 // terminators; returns the file name or "" on failure.
-func (s *OutgoingService) writeUnionPayFile(ctx context.Context, txnList []*UnionPayAcqTxnWorkEntity, insShortName, fileName, iin string, response map[string]string) string {
+func (s *OutgoingService) writeUnionPayFile(ctx context.Context, txnList []*UnionPayAcqTxnWorkEntity, insShortName, fileName, acqBinIIN string, response map[string]string) string {
 	if len(txnList) == 0 {
 		return ""
 	}
@@ -316,6 +332,16 @@ func (s *OutgoingService) writeUnionPayFile(ctx context.Context, txnList []*Unio
 	mult := new(big.Rat).SetInt64(pow10int(fd))
 	now := s.now()
 
+	// The TC000 header identifies the submitting acquirer. Take it from the
+	// transactions' own acquiring IIN (ISO Field 32) rather than from
+	// ACQUIRER_BINS.ACQ_MC_ICA_NO, which is only VARCHAR2(6) and so cannot
+	// hold a real 8-digit UnionPay acquirer IIN: a UAT file carries 24160784
+	// while that column holds 034540 (Mercury's). Falls back to the bin, then
+	// to empty.
+	iin := unionPayHeaderIIN(txnList)
+	if iin == "" && acqBinIIN != "" {
+		iin = acqBinIIN
+	}
 	lines := []string{unionPayTC000(iin, now, s.cfg.UnionPayVersionTag)}
 	for _, txn := range txnList {
 		lines = append(lines, unionPayTxnRecord(txn, response, mult))
@@ -330,10 +356,16 @@ func (s *OutgoingService) writeUnionPayLinesToFile(lines []string, insShortName,
 		return ""
 	}
 	path := filepath.Join(s.cfg.ReconOutDir, fileName)
+	// Records are separated by CRLF with NO trailing CRLF after the last
+	// record. The reference joins without a trailing newline, and a real UAT
+	// file (OFC26090851C, 3996 bytes) ends on the trailer's padding rather
+	// than on a line break; emitting one adds 2 stray bytes.
 	var sb strings.Builder
-	for _, line := range lines {
+	for i, line := range lines {
+		if i > 0 {
+			sb.WriteString("\r\n")
+		}
 		sb.WriteString(line)
-		sb.WriteString("\r\n")
 	}
 	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
 		logOutsvc("writeUnionPayLinesToFile", err)
@@ -343,6 +375,20 @@ func (s *OutgoingService) writeUnionPayLinesToFile(lines []string, insShortName,
 }
 
 // ---- record builders (Part III sections 2.5 and 4.2) ----
+
+// unionPayHeaderIIN returns the acquiring IIN shared by the batch, taken from
+// UPT_ACQ_INST_ID_CODE (ISO Field 32). Returns "" when no row carries one.
+func unionPayHeaderIIN(txnList []*UnionPayAcqTxnWorkEntity) string {
+	for _, txn := range txnList {
+		if txn == nil {
+			continue
+		}
+		if v := strings.TrimSpace(txn.AcqinstIdCode); v != "" {
+			return v
+		}
+	}
+	return ""
+}
 
 // unionPayTC000 builds the file header record (Block 0 only, 46 chars).
 func unionPayTC000(iin string, batchDate time.Time, versionTag string) string {
@@ -407,10 +453,18 @@ func unionPayIsRefund(procCode string) bool {
 
 // unionPayBlock0 builds the basic settlement information (269 chars).
 func unionPayBlock0(txn *UnionPayAcqTxnWorkEntity, pan, tc, bitmap string, mult *big.Rat) string {
-	mmddhhmmss := "0000000000"
+	// Block 0 42-51 is "Transmission Date Time" = ISO Field 7, NOT the switch's
+	// local time. A real UAT file proves the distinction: it carries 0825070326
+	// while the transaction's own local_time is 110326 -- a 4 hour offset. The
+	// two must not be conflated or every record is filed under the wrong hour.
+	mmddhhmmss := unionPayPad(txn.TransDateTime, 10)
 	authDate := "    "
+	if strings.TrimSpace(mmddhhmmss) == "" {
+		if txn.LocalDateTime != nil {
+			mmddhhmmss = txn.LocalDateTime.Format("0102150405")
+		}
+	}
 	if txn.LocalDateTime != nil {
-		mmddhhmmss = txn.LocalDateTime.Format("0102150405")
 		authDate = txn.LocalDateTime.Format("0102")
 	}
 	currency := unionPayPad(txn.TxnCurCode, 3)
@@ -455,21 +509,54 @@ func unionPayBlock0(txn *UnionPayAcqTxnWorkEntity, pan, tc, bitmap string, mult 
 }
 
 // unionPayOriginalTxnInfo builds Block 0 positions 169-191 (n23) for a refund:
-// the original transaction code (n3), its date/time (n10), its STAN (n6) and
-// the settlement date (n4). A refund without an original is all zeros.
+// the ORIGINAL transaction code (n3), the original's date/time (n10), the
+// original's STAN (n6) and the original's settlement date (n4).
+//
+// These all come from the original sale, not from the refund. A real UAT file
+// (OFC26090851C) shows this: refund rrn 623707911124 carries
+// "100" + "0825071821" + "343027" + "0825", i.e. the original sale's
+// transmission date-time, its STAN and its settlement date. Deriving them from
+// the refund's own timestamp would file the refund against the wrong day.
+//
+// A refund with no original is all zeros, matching the reference's behaviour
+// when the original cannot be located.
 func unionPayOriginalTxnInfo(txn *UnionPayAcqTxnWorkEntity) string {
-	origDateTime := "0000000000"
-	origStan := "000000"
-	settleDate := "0000"
-	if txn.LocalDateTime != nil {
-		origDateTime = txn.LocalDateTime.Format("0102150405")
-		settleDate = txn.LocalDateTime.Format("0102")
+	zeros := strings.Repeat("0", 23)
+	if strings.TrimSpace(txn.OriginalRRN) == "" {
+		return zeros
 	}
-	if s := strings.TrimSpace(txn.OriginalRRN); s != "" {
-		// Last 6 of the RRN is the best available STAN correlation.
-		origStan = unionPayPad(s, 6)
+	dateTime := unionPayPad(txn.OrigTxnDatetime, 10)
+	if strings.TrimSpace(dateTime) == "" {
+		// The original sale was not located at split time. The reference
+		// implementation logs a warning and emits zeros in this case; it does
+		// NOT substitute the refund's own values, which would file the refund
+		// against the wrong day.
+		return zeros
 	}
-	return unionPayTC100 + origDateTime + origStan + settleDate
+	code := unionPayPad(txn.OrigTxnCode, 3)
+	if strings.TrimSpace(code) == "" {
+		code = unionPayTC100
+	}
+	stan := unionPayPad(txn.OrigStan, 6)
+	if strings.TrimSpace(stan) == "" {
+		// The STAN is the last 6 digits of the original RRN.
+		stan = unionPayPadLast(txn.OriginalRRN, 6)
+	}
+	settle := unionPayPad(txn.OrigSettleDate, 4)
+	if strings.TrimSpace(settle) == "" {
+		settle = "0000"
+	}
+	return code + dateTime + stan + settle
+}
+
+// unionPayPadLast left-justifies v to width n, keeping the LAST n characters
+// when v is longer (used for the STAN suffix of a 12-digit RRN).
+func unionPayPadLast(v string, n int) string {
+	v = strings.TrimSpace(v)
+	if len(v) > n {
+		return v[len(v)-n:]
+	}
+	return v + strings.Repeat("0", n-len(v))
 }
 
 // unionPayFeatureIndicator builds Block 0 position 231: a space on a TC100
@@ -606,7 +693,7 @@ func unionPayBlock1(txn *UnionPayAcqTxnWorkEntity, mult *big.Rat) string {
 		unionPayCreditZero11 + // 53-64 net fee amount (x+n11)
 		unionPayZero3 + // 65-67 IRF billing currency
 		unionPayZero8 + // 68-75 exchange rate, RF billing -> settlement
-		unionPaySpace3 + // 76-78 abbreviation of international organization
+		unionPayOrgCodeCUP + // 76-78 abbreviation of international organization
 		" " + // 79    Mainland China transaction indicator
 		unionPayCreditZero11 + // 80-91 amount, transaction fee (x+n11)
 		unionPayPad("", 20) + // 92-111 QRC voucher number
@@ -624,18 +711,18 @@ func unionPayBlock2(txn *UnionPayAcqTxnWorkEntity, mult *big.Rat) string {
 	if strings.TrimSpace(currency) == "" {
 		currency = unionPayDefaultCurrency
 	}
-	return unionPayPad(txn.AppCryptogram, 16) +
+	return unionPayPad(unionPayUpper(txn.AppCryptogram), 16) +
 		unionPayPad(txn.PosEntryMode, 3) +
 		panSeq +
-		unionPayPad(txn.CardInputCapability, 1) +
-		" " + // IC card condition code
-		unionPayPad(txn.ChipTrlCapabilities, 6) +
-		unionPayPad(txn.TrlVerResult, 10) +
-		unionPayPad(txn.UpblNumber, 8) +
+		unionPayEntryCapability(txn) +
+		unionPayICCardCondition(txn.PosEntryMode) +
+		unionPayPad(unionPayUpper(txn.ChipTrlCapabilities), 6) +
+		unionPayPad(unionPayUpper(txn.TrlVerResult), 10) +
+		unionPayPad(unionPayUpper(txn.UpblNumber), 8) +
 		unionPayPad(txn.IfdSerNumber, 8) +
-		unionPayPad(txn.IssAppData, 64) +
+		unionPayPad(unionPayUpper(txn.IssAppData), 64) +
 		unionPayPad(txn.AppTxnCounter, 4) +
-		unionPayPad(txn.AppICProfile, 4) +
+		unionPayPad(unionPayUpper(txn.AppICProfile), 4) +
 		unionPayPad(txn.ChipTxnDate, 6) +
 		unionPayPad(txn.TrlConCode, 3) +
 		unionPayPad(txn.IssAuthData, 42) +
@@ -647,7 +734,7 @@ func unionPayBlock2(txn *UnionPayAcqTxnWorkEntity, mult *big.Rat) string {
 		unionPayMinor12(txn.CashBackAmount, mult) + // other amount (Tag9F03)
 		unionPayPad(txn.CvmResult, 6) +
 		unionPayPad(txn.ChipTrlType, 2) +
-		unionPayPad(txn.DedicatedFileName, 32) +
+		unionPayPad(unionPayUpper(txn.DedicatedFileName), 32) +
 		unionPayPad(txn.TrlAppVerNumber, 4) +
 		unionPayPad("", 8) + // transaction serial counter
 		unionPayPad("", 30) // reserved
@@ -657,8 +744,19 @@ func unionPayBlock2(txn *UnionPayAcqTxnWorkEntity, mult *big.Rat) string {
 
 // unionPayIsChipTxn reports whether the record carries Block 2 IC card data.
 func unionPayIsChipTxn(txn *UnionPayAcqTxnWorkEntity) bool {
-	return strings.HasPrefix(txn.PosEntryMode, "05") || strings.HasPrefix(txn.PosEntryMode, "07") || strings.HasPrefix(txn.PosEntryMode, "95")
+	// PAN-entry-mode prefixes that carry Block 2: contact (05), contactless
+	// (07) and QRC-read (98). Magnetic-stripe records do not.
+	for _, pfx := range unionPayChipPANEntryPrefixes {
+		if strings.HasPrefix(txn.PosEntryMode, pfx) {
+			return true
+		}
+	}
+	return false
 }
+
+// unionPayChipPANEntryPrefixes are the DE22 PAN-entry-mode prefixes that carry
+// Block 2 IC card data.
+var unionPayChipPANEntryPrefixes = []string{"05", "07", "98"}
 
 // unionPayTransactionCategory builds Block 2 positions 182-183: the first two
 // digits of the processing code (ISO Field 3, EMV Tag 9C). It is NOT the chip
@@ -668,6 +766,43 @@ func unionPayTransactionCategory(procCode string) string {
 		return unionPayZero3[:2]
 	}
 	return procCode[:2]
+}
+
+// unionPayEntryCapability builds Block 2 position 23 from ISO F60.2.2,
+// defaulting to "0" (unknown) when the switch did not supply it.
+func unionPayEntryCapability(txn *UnionPayAcqTxnWorkEntity) string {
+	v := strings.TrimSpace(txn.CardInputCapability)
+	if v == "" {
+		return unionPayEntryCapUnknown
+	}
+	return unionPayPad(v, 1)
+}
+
+// unionPayICCardCondition builds Block 2 position 24 from ISO F60.2.3: "2" when
+// the entry mode indicates a fallback read, otherwise "0".
+func unionPayICCardCondition(posEntryMode string) string {
+	if strings.TrimSpace(posEntryMode) == "90" {
+		return unionPayICCondFallback
+	}
+	return unionPayICCondNormal
+}
+
+// unionPayUpper uppercases a value when it is pure hex, so EMV-sourced fields
+// land in the file in the uppercase form UnionPay uses (a real UAT file carries
+// "7C00" and "A000000333010102", not lowercase). Non-hex values (dates, STANs,
+// text) are returned untouched.
+func unionPayUpper(v string) string {
+	if v == "" {
+		return v
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !isHex {
+			return v
+		}
+	}
+	return strings.ToUpper(v)
 }
 
 // unionPayMinor12 renders value*multiplier (minor units) as a 12-digit

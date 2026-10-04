@@ -22,15 +22,27 @@ type UnionPayAcqTxnWorkEntity struct {
 	// OriginalRRN correlates a refund (TC101) with its original sale. Drives
 	// Block 0 positions 169-191 (original transaction code/date-time/STAN and
 	// the settlement date).
-	OriginalRRN     string     `db:"UPT_ORIG_RET_REF_NUMBER"`
+	OriginalRRN string `db:"UPT_ORIG_RET_REF_NUMBER"`
+	// The ORIGINAL sale's attributes, copied from the original POS row at
+	// split time. They cannot be derived from the refund: a real UAT file
+	// carries the original's own transmission date-time and settlement date,
+	// not the refund's.
+	OrigTxnCode     string     `db:"UPT_ORIG_TXN_CODE"`
+	OrigTxnDatetime string     `db:"UPT_ORIG_TXN_DATETIME"`
+	OrigStan        string     `db:"UPT_ORIG_STAN"`
+	OrigSettleDate  string     `db:"UPT_ORIG_SETTLE_DATE"`
 	CardNumber      string     `db:"UPT_CARD_NUMBER"`
 	TxnAmount       float64    `db:"UPT_TXN_AMOUNT"`
 	SurchargeAmount float64    `db:"UPT_SCHG_AMOUNT"`
 	LocalDateTime   *time.Time `db:"UPT_LOCAL_DATE_TIME"`
-	TxnDate         *time.Time `db:"UPT_TXN_DATE"`
-	MeName          string     `db:"UPT_ME_NAME"`
-	MeCity          string     `db:"UPT_ME_CITY"`
-	MeCountry       string     `db:"UPT_ME_COUNTRY"`
+	// TransDateTime is ISO Field 7 (MMDDhhmmss) as sent by the network. It is
+	// what Block 0 42-51 must carry; LocalDateTime is the switch's own clock and
+	// can be hours away from it.
+	TransDateTime string     `db:"UPT_TRANS_DATE_TIME"`
+	TxnDate       *time.Time `db:"UPT_TXN_DATE"`
+	MeName        string     `db:"UPT_ME_NAME"`
+	MeCity        string     `db:"UPT_ME_CITY"`
+	MeCountry     string     `db:"UPT_ME_COUNTRY"`
 	// AcqInstCountryCode is the NUMERIC country code (ISO Field 19, e.g. 784)
 	// that feeds Block 0 positions 245-247. It is NOT the alpha merchant
 	// country in MeCountry.

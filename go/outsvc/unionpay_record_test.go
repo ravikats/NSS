@@ -166,7 +166,7 @@ func TestUnionPayBlock1UsesOutgoingDefaults(t *testing.T) {
 		{"53-64 net fee amount", 53, 64, "D00000000000"},
 		{"65-67 IRF billing currency", 65, 67, "000"},
 		{"68-75 exchange rate RF->settlement", 68, 75, "00000000"},
-		{"76-78 international organization", 76, 78, "   "},
+		{"76-78 international organization", 76, 78, "CUP"},
 		{"79 Mainland China indicator", 79, 79, " "},
 		{"80-91 amount, transaction fee", 80, 91, "D00000000000"},
 	} {
@@ -272,3 +272,146 @@ func TestUnionPayHeaderTrailerLengths(t *testing.T) {
 		t.Errorf("trailer transaction code = %q, want 001", pos(tr, 1, 3))
 	}
 }
+
+// Values below are taken from the REAL UAT settlement file OFC26090851C
+// (ftpserver/OFC26090851C), which is the strongest available evidence for the
+// record layout.
+
+// A real UAT record carries "CUP" in Block 1 76-78. It used to be blank.
+func TestUnionPayOrgCodeIsCUP(t *testing.T) {
+	b := unionPayBlock1(unionpayEntity(), big.NewRat(1, 1))
+	if got := pos(b, 76, 78); got != "CUP" {
+		t.Errorf("Block 1 76-78 organization = %q, want CUP", got)
+	}
+}
+
+// Block 2 23/24 come from ISO F60.2.2 / F60.2.3, not from the chip TLV. A real
+// UAT record shows "0" and "0" for a 051 entry; the reference maps entry mode
+// 90 to "2".
+func TestUnionPayBlock2EntryCapabilityAndICCondition(t *testing.T) {
+	txn := unionpayEntity()
+	txn.PosEntryMode = "051"
+	txn.CardInputCapability = ""
+	b := unionPayBlock2(txn, big.NewRat(1, 1))
+	if got := pos(b, 23, 23); got != "0" {
+		t.Errorf("Block 2 23 entry capability = %q, want 0 (unknown default)", got)
+	}
+	if got := pos(b, 24, 24); got != "0" {
+		t.Errorf("Block 2 24 IC card condition = %q, want 0", got)
+	}
+	fallback := unionpayEntity()
+	fallback.PosEntryMode = "90"
+	if got := pos(unionPayBlock2(fallback, big.NewRat(1, 1)), 24, 24); got != "2" {
+		t.Errorf("Block 2 24 for entry mode 90 = %q, want 2", got)
+	}
+	// An explicit capability from the authorization is carried through.
+	explicit := unionpayEntity()
+	explicit.CardInputCapability = "5"
+	if got := pos(unionPayBlock2(explicit, big.NewRat(1, 1)), 23, 23); got != "5" {
+		t.Errorf("Block 2 23 explicit capability = %q, want 5", got)
+	}
+}
+
+// EMV-sourced hex must land uppercase. A real UAT record carries "7C00" and
+// "A000000333010102"; the switch emits lowercase.
+func TestUnionPayEMVFieldsAreUppercase(t *testing.T) {
+	txn := unionpayEntity()
+	txn.PosEntryMode = "05"
+	txn.AppCryptogram = "61367a3cd782ca58"
+	txn.AppICProfile = "7c00"
+	txn.DedicatedFileName = "a000000333010102"
+	txn.ChipTrlCapabilities = "e0f0c8"
+	txn.IssAppData = "07000103a02012010a01000000000034bde646"
+	b := unionPayBlock2(txn, big.NewRat(1, 1))
+	for _, c := range []struct {
+		name       string
+		start, end int
+	}{
+		{"cryptogram", 1, 16}, {"app profile", 125, 128},
+		{"dedicated file", 221, 252}, {"terminal capabilities", 25, 30},
+		{"issuer app data", 57, 120},
+	} {
+		sub := pos(b, c.start, c.end)
+		if sub != strings.ToUpper(sub) {
+			t.Errorf("Block 2 %s = %q, want uppercase", c.name, sub)
+		}
+	}
+	// Non-hex values must pass through untouched -- STAN and dates stay as-is.
+	rec := unionPayBlock0(txn, "6212345678901234", unionPayTC100, unionPayBlock012Bitmap, big.NewRat(1, 1))
+	if got := pos(rec, 52, 57); got != "123456" {
+		t.Errorf("STAN = %q, want 123456 unchanged", got)
+	}
+}
+
+// A refund's Block 0 169-191 carries the ORIGINAL sale's code, transmission
+// date-time, STAN and settlement date. Verified against OFC26090851C, whose
+// refund rrn 623707911124 carries "100" + "0825071821" + "343027" + "0825".
+func TestUnionPayRefundCarriesOriginalTxnInfo(t *testing.T) {
+	refund := unionpayEntity()
+	refund.TxnType = "20"
+	refund.OriginalRRN = "623707343027"
+	refund.LocalDateTime = ptrTime(time.Date(2026, 8, 25, 7, 14, 42, 0, time.UTC))
+	refund.OrigTxnCode = "100"
+	refund.OrigTxnDatetime = "0825071821"
+	refund.OrigStan = "343027"
+	refund.OrigSettleDate = "0825"
+	rec := unionPayBlock0(refund, "6210947000000013", unionPayTC101, unionPayBlock01Bitmap, big.NewRat(1, 1))
+	got := pos(rec, 169, 191)
+	want := "100" + "0825071821" + "343027" + "0825"
+	if got != want {
+		t.Errorf("Block 0 169-191 = %q, want %q", got, want)
+	}
+	// A refund whose original was not found degrades to zeros rather than to
+	// the refund's own timestamp.
+	orphan := unionpayEntity()
+	orphan.TxnType = "20"
+	orphan.OriginalRRN = "623707999999"
+	rec = unionPayBlock0(orphan, "6210947000000013", unionPayTC101, unionPayBlock01Bitmap, big.NewRat(1, 1))
+	if got := pos(rec, 169, 191); got != strings.Repeat("0", 23) {
+		t.Errorf("orphan refund 169-191 = %q, want 23 zeros", got)
+	}
+	// With no original RRN at all, also zeros.
+	none := unionpayEntity()
+	none.TxnType = "20"
+	rec = unionPayBlock0(none, "6210947000000013", unionPayTC101, unionPayBlock01Bitmap, big.NewRat(1, 1))
+	if got := pos(rec, 169, 191); got != strings.Repeat("0", 23) {
+		t.Errorf("refund with no original 169-191 = %q, want 23 zeros", got)
+	}
+}
+
+// The STAN fallback derives the last 6 digits of the original RRN.
+func TestUnionPayPadLast(t *testing.T) {
+	if got := unionPayPadLast("623707343027", 6); got != "343027" {
+		t.Errorf("unionPayPadLast = %q, want 343027", got)
+	}
+	if got := unionPayPadLast("343027", 6); got != "343027" {
+		t.Errorf("unionPayPadLast exact = %q, want 343027", got)
+	}
+	if got := unionPayPadLast("12", 6); got != "120000" {
+		t.Errorf("unionPayPadLast short = %q, want 120000", got)
+	}
+}
+
+// The header IIN comes from the transactions, not from ACQUIRER_BINS (whose
+// ACQ_MC_ICA_NO is VARCHAR2(6) and holds 034540 for the 'U' bin).
+func TestUnionPayHeaderIINFromTransactions(t *testing.T) {
+	rows := []*UnionPayAcqTxnWorkEntity{
+		{AcqinstIdCode: "24160784"},
+		{AcqinstIdCode: "24160784"},
+	}
+	if got := unionPayHeaderIIN(rows); got != "24160784" {
+		t.Errorf("header IIN = %q, want 24160784", got)
+	}
+	if got := unionPayHeaderIIN(nil); got != "" {
+		t.Errorf("header IIN for no rows = %q, want empty", got)
+	}
+	if got := unionPayHeaderIIN([]*UnionPayAcqTxnWorkEntity{{}, nil, {AcqinstIdCode: "24160784"}}); got != "24160784" {
+		t.Errorf("header IIN skipping blanks = %q, want 24160784", got)
+	}
+	h := unionPayTC000("24160784", time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC), "TEST")
+	if got := pos(h, 8, 18); got != "24160784   " {
+		t.Errorf("header IIN field = %q, want '24160784   '", got)
+	}
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }
