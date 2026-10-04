@@ -4,6 +4,14 @@
 -- exercised end-to-end on 192.168.29.79:1521/FREEPDB1. Confirm real values
 -- before any production use.
 --
+-- Verified against UAT on 2026-10-04: there is NO UnionPay configuration there at
+-- all. INTERFACES stops at INT_CODE 21 (MERCURY); FILE_FORMATS uses system
+-- codes 111-135 only; ACQUIRER_BINS has only A/J/M/V; and UP_ACQ_TXN_WORK does
+-- not exist. Codes chosen here are the next free local values and WILL NOT
+-- match production. Note system 132 is already MERCURY's (type 'S'), which is
+-- why 136 was chosen rather than the 132 originally guessed here and in
+-- IRF/unionpayoutgoing.md.
+--
 -- Idempotent. Run as the schema user (NETWORK_SETTLEMENT_UAT).
 
 -- 1. UP_ACQ_TXN_WORK (staging) — column sizes modelled on MERCURY_ACQ_TXN_WORK.
@@ -29,6 +37,9 @@ BEGIN
       UPT_ME_NAME VARCHAR2(25 BYTE),
       UPT_ME_CITY VARCHAR2(20 BYTE),
       UPT_ME_COUNTRY VARCHAR2(3 BYTE),
+      UPT_ORIG_RET_REF_NUMBER VARCHAR2(12 BYTE),
+      UPT_ACQ_INST_COUNTRY_CODE VARCHAR2(3 BYTE),
+      UPT_ECI VARCHAR2(2 BYTE),
       UPT_MCC VARCHAR2(4 BYTE),
       UPT_APPR_CODE VARCHAR2(6 BYTE),
       UPT_TXN_CUR_CODE VARCHAR2(3 BYTE),
@@ -105,6 +116,9 @@ BEGIN
       UPT_ME_NAME VARCHAR2(25 BYTE),
       UPT_ME_CITY VARCHAR2(20 BYTE),
       UPT_ME_COUNTRY VARCHAR2(3 BYTE),
+      UPT_ORIG_RET_REF_NUMBER VARCHAR2(12 BYTE),
+      UPT_ACQ_INST_COUNTRY_CODE VARCHAR2(3 BYTE),
+      UPT_ECI VARCHAR2(2 BYTE),
       UPT_MCC VARCHAR2(4 BYTE),
       UPT_APPR_CODE VARCHAR2(6 BYTE),
       UPT_TXN_CUR_CODE VARCHAR2(3 BYTE),
@@ -164,17 +178,24 @@ INSERT INTO INTERFACES (INT_CODE, INT_NAME, INT_SHORT_NAME, INT_CATEGORY,
    SELECT 22, 'UnionPay', 'UNIONPAY', 'UNIONPAY', 1, 'N', 0, 4 FROM DUAL
    WHERE NOT EXISTS (SELECT 1 FROM INTERFACES WHERE INT_CODE = 22);
 
--- 4. FILE_FORMATS row for UnionPay outgoing (type 'O', system 132). FABRICATED.
-INSERT INTO FILE_FORMATS (FOR_CODE, FOR_INS_CODE, FOR_TYPE, FOR_DESCRIPTION,
-   FOR_SYSTEM_CODE, FOR_INT_TYPE, FOR_FILE_TYPE, FOR_UPDATED_USER)
-   SELECT 124, 1, 'O', 'UNIONPAY', 132, 'N', 'T', 4 FROM DUAL
-   WHERE NOT EXISTS (SELECT 1 FROM FILE_FORMATS WHERE FOR_SYSTEM_CODE = 132 AND FOR_TYPE = 'O');
+-- 4. FILE_FORMATS row for UnionPay outgoing (type 'O', system 136). FABRICATED.
+--    Two traps here: FOR_CODE is GENERATED ALWAYS identity (inserting it
+--    raises ORA-32795) so let the identity assign it, and FOR_LAST_UPDATED is
+--    NOT NULL (ORA-01400 if omitted). FOR_UPDATED_USER / FOR_INS_CODE /
+--    FOR_TYPE / FOR_INT_TYPE / FOR_DESCRIPTION are NOT NULL too.
+INSERT INTO FILE_FORMATS (FOR_LAST_UPDATED, FOR_UPDATED_USER, FOR_INS_CODE,
+   FOR_TYPE, FOR_INT_TYPE, FOR_DESCRIPTION, FOR_SYSTEM_CODE, FOR_FILE_TYPE)
+   SELECT SYSDATE, 4, 1, 'O', 'N', 'UNIONPAY', 136, 'T' FROM DUAL
+   WHERE NOT EXISTS (SELECT 1 FROM FILE_FORMATS WHERE FOR_SYSTEM_CODE = 136 AND FOR_TYPE = 'O');
 
 -- 5. ACQUIRER_BINS row for UnionPay bin type 'U'. FABRICATED.
+--    The replica already has 970962/'U' (the UnionPay IIN range), so this is
+--    guarded to avoid creating a SECOND 'U' bin -- FindAcquirerBins(ins,'U')
+--    would then be ambiguous.
 INSERT INTO ACQUIRER_BINS (ACQ_BIN, ACQ_BIN_TYPE, ACQ_DOM_INTL_FLAG,
    ACQ_MC_ICA_NO, ACQ_ARN_SEQ_NO, ACQ_INS_CODE, ACQ_UPDATED_USER)
-   SELECT '970963', 'U', 'D', '970962', 0, 1, 4 FROM DUAL
-   WHERE NOT EXISTS (SELECT 1 FROM ACQUIRER_BINS WHERE ACQ_BIN = '970963');
+   SELECT '970962', 'U', 'D', '970962', 0, 1, 4 FROM DUAL
+   WHERE NOT EXISTS (SELECT 1 FROM ACQUIRER_BINS WHERE ACQ_BIN = '970962');
 
 COMMIT;
 /
