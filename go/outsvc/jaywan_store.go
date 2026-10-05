@@ -138,6 +138,26 @@ const jaywanColumns = `
 	JWN_OUT_FILE_DATE, JWN_FILE_ID, JWN_ENC_CARD_NUMBER, JWN_RESP_CODE, JWN_ECOM_INDICATOR,
 	JWN_SETTL_DATE, JWN_SETTL_INDICATOR, JWN_POS_CONDITION_CODE, JWN_FULL_PARTIAL_INDICATOR`
 
+// jaywanColumnList parses jaywanColumns so callers (and tests) never hardcode
+// its length. Both inserts derive their placeholder count from this, so the
+// column list and the binder cannot drift apart.
+func jaywanColumnList() []string {
+	raw := strings.Split(jaywanColumns, ",")
+	cols := make([]string, 0, len(raw))
+	for _, c := range raw {
+		if c = strings.TrimSpace(c); c != "" {
+			cols = append(cols, c)
+		}
+	}
+	return cols
+}
+
+// jaywanInsertSQL builds the shared INSERT for both jaywan tables. The bind
+// count comes from the column list, not a literal.
+func jaywanInsertSQL(table string) string {
+	return "INSERT INTO " + table + " (" + jaywanColumns + ") VALUES (" + jaywanInsertValues(len(jaywanColumnList())) + ")"
+}
+
 func jaywanInsertValues(n int) string {
 	parts := make([]string, n)
 	for i := range parts {
@@ -162,10 +182,47 @@ func jaywanDataArgs(e *JaywanAcqTxnWorkEntity) []any {
 	}
 }
 
+// ArchiveJaywanWork implements the archive + retire step as a single
+// transaction. Order matters: the rows must land in JAYWAN_ACQ_TXN_DATA BEFORE
+// the work rows are marked terminal, otherwise a mid-flight failure leaves work
+// rows committed as staged with nothing archived -- and the run reports success.
+func (s *oracleStore) ArchiveJaywanWork(ctx context.Context, ents []*JaywanAcqTxnWorkEntity, fileID string) error {
+	if len(ents) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	now := time.Now()
+	dataSQL := jaywanInsertSQL("JAYWAN_ACQ_TXN_DATA")
+	for _, e := range ents {
+		d := *e
+		d.LastUpdated = now
+		d.FileID = fileID
+		if _, err := tx.ExecContext(ctx, dataSQL, jaywanDataArgs(&d)...); err != nil {
+			return err
+		}
+	}
+
+	workSQL := `UPDATE JAYWAN_ACQ_TXN_WORK SET JWN_GEN_STATUS = :1, JWN_LAST_UPDATED = :2,
+	           JWN_OUT_FILE_DATE = :3, JWN_FILE_ID = :4 WHERE JWN_SER_NUMBER = :5`
+	for _, e := range ents {
+		e.GenStatus = 4
+		if _, err := tx.ExecContext(ctx, workSQL,
+			e.GenStatus, now, now, fileID, e.SerialNumber); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // InsertJaywanData mirrors JWNAcqTxnDataRepo.saveAll (moveWorkToData). The
 // serial number is preserved.
 func (s *oracleStore) InsertJaywanData(ctx context.Context, ents []*JaywanAcqTxnDataEntity) error {
-	sqlStmt := "INSERT INTO JAYWAN_ACQ_TXN_DATA (" + jaywanColumns + ") VALUES (" + jaywanInsertValues(48) + ")"
+	sqlStmt := jaywanInsertSQL("JAYWAN_ACQ_TXN_DATA")
 	for _, e := range ents {
 		if _, err := s.db.ExecContext(ctx, sqlStmt, jaywanDataArgs(e)...); err != nil {
 			return err
@@ -197,7 +254,7 @@ func (s *oracleStore) DeleteJaywanData(ctx context.Context, ents []*JaywanAcqTxn
 // InsertJaywanWork mirrors JWNAcqTxnWorkRepo.saveAll during revert
 // (mapToJaywanAcqWorkEntity preserves the serial number, genStatus=3).
 func (s *oracleStore) InsertJaywanWork(ctx context.Context, ents []*JaywanAcqTxnWorkEntity) error {
-	sqlStmt := "INSERT INTO JAYWAN_ACQ_TXN_WORK (" + jaywanColumns + ") VALUES (" + jaywanInsertValues(48) + ")"
+	sqlStmt := jaywanInsertSQL("JAYWAN_ACQ_TXN_WORK")
 	for _, e := range ents {
 		if _, err := s.db.ExecContext(ctx, sqlStmt, jaywanDataArgs(e)...); err != nil {
 			return err

@@ -80,6 +80,12 @@ type Store interface {
 	UpdateJaywanWorkStatuses(ctx context.Context, ents []*JaywanAcqTxnWorkEntity) error
 	DeleteJaywanWork(ctx context.Context, ents []*JaywanAcqTxnWorkEntity) error
 	InsertJaywanData(ctx context.Context, ents []*JaywanAcqTxnDataEntity) error
+
+	// ArchiveJaywanWork writes the data-table rows and flips the work rows to
+	// their terminal status in ONE transaction. The port did these as separate
+	// steps, so a failed archive left work rows committed as staged with nothing
+	// in JAYWAN_ACQ_TXN_DATA and the run still reported success.
+	ArchiveJaywanWork(ctx context.Context, ents []*JaywanAcqTxnWorkEntity, fileID string) error
 	FindJaywanDataByFileId(ctx context.Context, ins int, fileId string) ([]*JaywanAcqTxnDataEntity, error)
 	DeleteJaywanData(ctx context.Context, ents []*JaywanAcqTxnDataEntity) error
 	InsertJaywanWork(ctx context.Context, ents []*JaywanAcqTxnWorkEntity) error

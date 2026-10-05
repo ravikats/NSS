@@ -82,12 +82,7 @@ func (s *OutgoingService) ProcessJaywanOutgoing(ctx context.Context, insCode, us
 		return "Failed"
 	}
 
-	year := now.Year()
-	dayOfYear := now.YearDay()
-	julianDateStr := fmt.Sprintf("%02d%03d", year%100, dayOfYear)
-	// The 5 elements are N2 + N1 + AN9 + YYDDD + N2 = 19 chars, so the sequence
-	// must be zero-padded to 2 digits: a bare Itoa produced an 18-char name.
-	fileId := "000" + strOrNull(acq.ParticipantId) + julianDateStr + fmt.Sprintf("%02d", fileSequence)
+	fileId := jaywanFileID(strOrNull(acq.ParticipantId), now.Year(), now.YearDay(), fileSequence)
 	fileName := fileId + ".xml"
 
 	var entities []*JaywanAcqTxnWorkEntity
@@ -172,18 +167,20 @@ func (s *OutgoingService) ProcessJaywanOutgoing(ctx context.Context, insCode, us
 	// Java: updateOutFilelog(fileName, fileName, ...) sets FileId = the file
 	// name and keeps generated_status = 4.
 	s.updateOutFilelog(ctx, insCode, outgoingLogSerialNumber, fileName, &fileName)
-	// Mark 9 -> 4 (completed), mirroring the Java re-save of the entities.
-	for _, e := range entities {
-		e.GenStatus = 4
-	}
-	if err := s.store.UpdateJaywanWorkStatuses(ctx, entities); err != nil {
-		logOutsvc("UpdateJaywanWorkStatuses", err)
+	// Archive and retire atomically. This used to be three separate steps --
+	// mark work rows 4, complete the POS rows, then insert the archive -- so a
+	// failed archive left work rows committed as staged and POS marked
+	// 'Completed' with nothing in JAYWAN_ACQ_TXN_DATA, and the run still
+	// returned "Success". Now a failure aborts before anything is retired and
+	// surfaces as "Failed", so the work rows stay claimable for a retry.
+	if err := s.store.ArchiveJaywanWork(ctx, entities, fileName); err != nil {
+		logOutsvc("ArchiveJaywanWork", err)
+		return "Failed"
 	}
 	s.insertJaywanIntoOutgoingSummary(ctx, user, insCode, intCode, fileName, outgoingLogSerialNumber)
 	if err := s.store.CompleteJaywanPosStatus(ctx, insCode); err != nil {
 		logOutsvc("CompleteJaywanPosStatus", err)
 	}
-	s.moveJaywanWorkToData(ctx, entities, fileName)
 	// generateOutgoingSummaryPDF is not ported yet.
 	return "Success"
 }
@@ -493,4 +490,19 @@ func strOrNull(p *string) string {
 		return "null"
 	}
 	return *p
+}
+
+// jaywanFileID builds the Jaywan clearing filename per spec
+// UAE_Switch_Clearing_Specification_Document_V1_3 section 2.5.3, whose five
+// elements are N2 file type + N1 clearing cycle + AN9 participant id + YYDDD
+// Julian date + N2 file sequence -- 19 characters in total.
+//
+// It is a named function rather than inline so it can be asserted directly:
+// the shipped defects were a 1-based sequence for the first file of a date and
+// an un-padded strconv.Itoa on the sequence, both invisible to `go test` because
+// nothing exercised the expression.
+func jaywanFileID(participantID string, year, dayOfYear, sequence int) string {
+	// "00" = acquirer member generated file, "0" = default clearing cycle.
+	julian := fmt.Sprintf("%02d%03d", year%100, dayOfYear)
+	return "000" + participantID + julian + fmt.Sprintf("%02d", sequence)
 }
