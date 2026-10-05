@@ -121,8 +121,13 @@ func (s *oracleStore) DeleteJaywanWork(ctx context.Context, ents []*JaywanAcqTxn
 
 // jaywanColumns is the shared column list for JAYWAN_ACQ_TXN_DATA and
 // JAYWAN_ACQ_TXN_WORK inserts (moveWorkToData / revert copy the same field set).
+// JWN_SER_NUMBER is deliberately absent: it is GENERATED ALWAYS AS IDENTITY
+// (ISEQ$$_76320.nextval) on both JAYWAN_ACQ_TXN_WORK and JAYWAN_ACQ_TXN_DATA,
+// so naming it makes every insert fail with ORA-32795. The Go port used to bind
+// the work table's serial number into it, which also silently copied a PK from
+// one table into another.
 const jaywanColumns = `
-	JWN_SER_NUMBER, JWN_LAST_UPDATED, JWN_UPDATED_USER, JWN_INS_CODE, JWN_INT_CODE,
+	JWN_LAST_UPDATED, JWN_UPDATED_USER, JWN_INS_CODE, JWN_INT_CODE,
 	JWN_PRJ_SER_NUMBER, JWN_GEN_STATUS, JWN_TXN_REF_NUMBER, JWN_TXN_TYPE, JWN_TXN_CODE,
 	JWN_MSG_TYPE_ID, JWN_FUNC_CODE, JWN_LOCAL_DATE_TIME, JWN_CARD_NUMBER, JWN_ACQ_REF_DATA,
 	JWN_APPR_CODE, JWN_TERMINAL_ID, JWN_TXN_AMOUNT, JWN_SETL_AMOUNT, JWN_BILL_AMOUNT,
@@ -144,7 +149,7 @@ func jaywanInsertValues(n int) string {
 // jaywanDataArgs maps a work entity to the jaywanColumns insert arguments.
 func jaywanDataArgs(e *JaywanAcqTxnWorkEntity) []any {
 	return []any{
-		e.SerialNumber, e.LastUpdated, e.UpdatedUser, e.InstitutionCode, e.IntCode,
+		e.LastUpdated, e.UpdatedUser, e.InstitutionCode, e.IntCode,
 		e.PrjSerNumber, e.GenStatus, e.TxnRefNumber, nullStr(e.TxnType), nullStr(e.TxnCode),
 		nullStr(e.MessageTypeId), nullStr(e.FunctionCode), nullTimeP(e.LocalDateTime), nullStr(e.CardNumber), nullStr(e.AcqRefData),
 		nullStr(e.ApprovalCode), nullStr(e.TerminalId), e.TxnAmount, e.SettledAmount, e.BillAmount,
@@ -160,7 +165,7 @@ func jaywanDataArgs(e *JaywanAcqTxnWorkEntity) []any {
 // InsertJaywanData mirrors JWNAcqTxnDataRepo.saveAll (moveWorkToData). The
 // serial number is preserved.
 func (s *oracleStore) InsertJaywanData(ctx context.Context, ents []*JaywanAcqTxnDataEntity) error {
-	sqlStmt := "INSERT INTO JAYWAN_ACQ_TXN_DATA (" + jaywanColumns + ") VALUES (" + jaywanInsertValues(49) + ")"
+	sqlStmt := "INSERT INTO JAYWAN_ACQ_TXN_DATA (" + jaywanColumns + ") VALUES (" + jaywanInsertValues(48) + ")"
 	for _, e := range ents {
 		if _, err := s.db.ExecContext(ctx, sqlStmt, jaywanDataArgs(e)...); err != nil {
 			return err
@@ -192,7 +197,7 @@ func (s *oracleStore) DeleteJaywanData(ctx context.Context, ents []*JaywanAcqTxn
 // InsertJaywanWork mirrors JWNAcqTxnWorkRepo.saveAll during revert
 // (mapToJaywanAcqWorkEntity preserves the serial number, genStatus=3).
 func (s *oracleStore) InsertJaywanWork(ctx context.Context, ents []*JaywanAcqTxnWorkEntity) error {
-	sqlStmt := "INSERT INTO JAYWAN_ACQ_TXN_WORK (" + jaywanColumns + ") VALUES (" + jaywanInsertValues(49) + ")"
+	sqlStmt := "INSERT INTO JAYWAN_ACQ_TXN_WORK (" + jaywanColumns + ") VALUES (" + jaywanInsertValues(48) + ")"
 	for _, e := range ents {
 		if _, err := s.db.ExecContext(ctx, sqlStmt, jaywanDataArgs(e)...); err != nil {
 			return err

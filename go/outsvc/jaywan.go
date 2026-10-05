@@ -70,9 +70,10 @@ func (s *OutgoingService) ProcessJaywanOutgoing(ctx context.Context, insCode, us
 	fileSequence := 0
 	if acq.OutfileDate != nil && dateOnly(*acq.OutfileDate) == dateOnly(now) {
 		fileSequence = acq.OutFileSeq
-	} else {
-		fileSequence = 1
 	}
+	// Spec 2.5.3 element 5: "00-1st file 01-2nd file", so the first file of a
+	// date is sequence 0, not 1. Subsequent files on the same day continue from
+	// the stored counter.
 	acq.OutFileSeq = fileSequence + 1
 	t := now
 	acq.OutfileDate = &t
@@ -84,7 +85,9 @@ func (s *OutgoingService) ProcessJaywanOutgoing(ctx context.Context, insCode, us
 	year := now.Year()
 	dayOfYear := now.YearDay()
 	julianDateStr := fmt.Sprintf("%02d%03d", year%100, dayOfYear)
-	fileId := "000" + strOrNull(acq.ParticipantId) + julianDateStr + strconv.Itoa(fileSequence)
+	// The 5 elements are N2 + N1 + AN9 + YYDDD + N2 = 19 chars, so the sequence
+	// must be zero-padded to 2 digits: a bare Itoa produced an 18-char name.
+	fileId := "000" + strOrNull(acq.ParticipantId) + julianDateStr + fmt.Sprintf("%02d", fileSequence)
 	fileName := fileId + ".xml"
 
 	var entities []*JaywanAcqTxnWorkEntity
