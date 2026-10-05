@@ -235,7 +235,7 @@ Recap number: 3-digit zero-padded sequence from `ACQ_OUT_FILE_SEQ`.
 
 3. Start IRF service (required for IRF calculation in tlf-service Stage2):
    ```bash
-   java -jar /media/ravi/83F7-5E85/Project/IRF/irf-service/target/irf-service-1.0.0-SNAPSHOT.jar > /tmp/irf-service.log 2>&1 &
+   java -jar /media/ravi/86667813-ca51-4baf-82b2-6b19d59ecc82/home/ravi/Projects/Project/IRF/irf-service/target/irf-service-1.0.0-SNAPSHOT.jar > /tmp/irf-service.log 2>&1 &
    # IRF service starts on http://localhost:8085 (default Spring Boot port)
    # Wait for ready (~5s)
    # Verify: curl http://localhost:8085/  -> "OK"
