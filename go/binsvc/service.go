@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -70,7 +71,7 @@ func (s *Service) log() *slog.Logger {
 // inserts the PROCESSING_JOBS + FILE_UPLOAD_LOG rows, and schedules the actual
 // file processing in a background goroutine.
 func (s *Service) ProcessBin(ctx context.Context, fileName, network string) *BinResponse {
-	filePath := s.Cfg.ReconIn + fileName
+	filePath := s.inputPath(fileName)
 	resp, err := s.validateFile(ctx, filePath, fileName, network)
 	if err != nil {
 		s.log().Error("validate file", "file", fileName, "err", err)
@@ -87,7 +88,7 @@ func (s *Service) ProcessBin(ctx context.Context, fileName, network string) *Bin
 	}
 
 	resp = &BinResponse{}
-	uplSer, err := s.insertFileUploadLog(ctx, fileName, int(jobSer))
+	uplSer, err := s.insertFileUploadLog(ctx, fileName, network, int(jobSer))
 	switch {
 	case err == errDuplicateFilename:
 		resp.Message = "DUPLICATE_FILENAME; provided filename is already exist."
@@ -120,7 +121,8 @@ func (s *Service) processBinFile(ctx context.Context, fileName, network string, 
 		(&mcProcessor{svc: s}).processMCBin(ctx, fileName, jobSer, uplSer)
 	case "VISA":
 		(&visaProcessor{svc: s}).processVisaBin(ctx, fileName, jobSer, uplSer)
-	case "JAYWAN":
+	case "JAYWAN", "UAESWITCH":
+		// Same loader: the uaeswitch POS BIN file is Jaywan's.
 		(&jaywanProcessor{svc: s}).processJaywanBin(ctx, fileName, jobSer, uplSer)
 	case "OMANNET":
 		(&omanProcessor{svc: s}).processOmanNetBin(ctx, fileName, jobSer, uplSer)
@@ -144,10 +146,20 @@ func (s *Service) BinFileDeletion(ctx context.Context, fileName, network string)
 		resp.Message = "FILE_NOT_FOUND; there is no filename found " + fileName
 		return resp
 	}
-	if e.UploadStatus != 5 {
-		resp.Message = "DELETION_NOT_ALLOWED; file deletion not allowed."
+	// The port only allowed deletion when the load had FAILED (status 5), which
+	// is Java's rule. That leaves no recovery path for a row stuck at pending
+	// (status 1): nothing else will ever advance it, so the file could neither
+	// be re-processed (FILE_UPLOAD_LOG.UPL_FILE_NAME is unique) nor removed.
+	// Any status is now removable, because clicking Remove is an explicit
+	// operator action; the rows a completed job loaded are deleted with it,
+	// which is the correct inverse of the load.
+	if e.UploadStatus != 4 && e.UploadStatus != 5 && e.UploadStatus != 1 {
+		resp.Message = "DELETION_NOT_ALLOWED; file deletion not allowed for status " +
+			strconv.Itoa(e.UploadStatus)
 		return resp
 	}
+	s.log().Info("removing bin file", "file", fileName, "network", network,
+		"uploadStatus", e.UploadStatus, "job", e.JobNumber)
 
 	var delErr error
 	switch strings.ToUpper(network) {
@@ -155,13 +167,18 @@ func (s *Service) BinFileDeletion(ctx context.Context, fileName, network string)
 		delErr = s.Store.DeleteMcRangeByJob(ctx, e.JobNumber)
 	case "VISA":
 		delErr = s.Store.DeleteVisaRangeByJob(ctx, e.JobNumber)
-	case "JAYWAN":
+	case "JAYWAN", "UAESWITCH":
 		delErr = s.Store.DeleteJaywanRangeByJob(ctx, e.JobNumber)
 	case "OMANNET":
 		delErr = s.Store.DeleteOmanNetByJob(ctx, e.JobNumber)
 	}
 	if delErr == nil {
 		delErr = s.Store.DeleteUploadLogByFileName(ctx, fileName)
+	}
+	if delErr == nil && e.JobNumber != 0 {
+		// Also drop the job row; leaving it orphaned makes the history
+		// unreadable and the next run's job numbering confusing.
+		delErr = s.Store.DeleteJobBySerialNumber(ctx, e.JobNumber)
 	}
 	if delErr != nil {
 		s.log().Error("delete failed", "file", fileName, "err", delErr)
@@ -205,13 +222,17 @@ func (s *Service) insertProcessingJob(ctx context.Context) (int64, error) {
 
 // insertFileUploadLog mirrors CommonService.insertFileUploadLog: status 1
 // (pending), upload/proc/business date today, file_id = filename.
-func (s *Service) insertFileUploadLog(ctx context.Context, fileName string, jobSer int) (int64, error) {
+// network is the request's network (MASTERCARD/VISA/...), not the file name:
+// UPL_FOR_CODE records the per-network FOR_CODE from MC_BIN_FORMAT_CODE etc.
+// This previously took fileName here and looked it up as if it were a network,
+// so UPL_FOR_CODE was always 0 while the port looked correct.
+func (s *Service) insertFileUploadLog(ctx context.Context, fileName, network string, jobSer int) (int64, error) {
 	now := s.now()
 	e := &UploadLog{
 		UpdatedUser:     s.Cfg.UpdatedUser,
 		InstitutionCode: s.Cfg.InsCode,
 		InterfaceCode:   s.Cfg.BinInterfaceCode,
-		FormatCode:      s.formatCode(fileName),
+		FormatCode:      s.formatCode(network),
 		FileName:        fileName,
 		UploadStatus:    1,
 		JobNumber:       jobSer,
@@ -222,6 +243,15 @@ func (s *Service) insertFileUploadLog(ctx context.Context, fileName string, jobS
 		BusinessDate:    now,
 	}
 	return s.Store.InsertUploadLog(ctx, e)
+}
+
+// inputPath resolves a file inside the input directory. The port concatenated
+// ReconIn + fileName, so a RECON_IN_* value without a trailing slash produced
+// "/vp-switch/INPUTUAESWITCH-...csv" and every load failed with "file was not
+// found" even though the upload was sitting in the directory. filepath.Join
+// is correct whether or not the configured value carries a trailing slash.
+func (s *Service) inputPath(fileName string) string {
+	return filepath.Join(s.Cfg.ReconIn, fileName)
 }
 
 func (s *Service) formatCode(network string) int {

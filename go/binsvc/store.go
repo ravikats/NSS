@@ -22,6 +22,10 @@ type Store interface {
 	InsertProcessingJob(ctx context.Context, user, insCode int) (int64, error)
 	FindJobBySerialNumber(ctx context.Context, ser int) (*ProcessingJob, error)
 	UpdateJobEndTime(ctx context.Context, ser int, end time.Time) error
+	// DeleteJobBySerialNumber removes the PROCESSING_JOBS row. Without it a
+	// removed BIN file left an orphaned job behind, since only the range rows
+	// and the upload log were cleaned up.
+	DeleteJobBySerialNumber(ctx context.Context, ser int) error
 
 	// --- FILE_UPLOAD_LOG ---
 	CountByUploadStatus(ctx context.Context, status int) (int, error)
@@ -34,6 +38,18 @@ type Store interface {
 
 	// --- BUSINESS_DATE ---
 	GetBusinessDate(ctx context.Context) (time.Time, error)
+
+	// --- STATUS / REPORTING (added for the Settlement → BIN Files tab) ---
+	// RecentJobs returns the newest PROCESSING_JOBS rows first, so the UI can
+	// show what was loaded and when without a second query per job.
+	RecentJobs(ctx context.Context, limit int) ([]*ProcessingJob, error)
+	// RecentUploadLogs returns the newest FILE_UPLOAD_LOG rows so the status
+	// view can show per-file progress. FetchUploadLogByFileName would need one
+	// query per staged file; this is one query for the whole list.
+	RecentUploadLogs(ctx context.Context, limit int) ([]*UploadLog, error)
+	// RangeTableCounts returns the live row count of each network's range
+	// table, keyed by network, so an operator can confirm a load landed.
+	RangeTableCounts(ctx context.Context) (map[string]int64, error)
 
 	// --- MC_ISS_ACC_RANGE ---
 	FindMcRange(ctx context.Context, low, high, priority string) (*McRange, error)
@@ -125,19 +141,82 @@ func (s *oracleStore) CountByUploadStatus(ctx context.Context, status int) (int,
 	return n, nil
 }
 
+// scanUploadLog reads one FILE_UPLOAD_LOG row.
+//
+// Every column after UPL_UPLOAD_STATUS is NULLABLE, and a freshly inserted
+// pending row has UPL_TOT_TXN_COUNT / UPL_TOT_ACCP_TXN_COUNT / UPL_FOR_CODE /
+// UPL_REMARKS all NULL. Scanning those straight into int/string made the lookup
+// fail with "converting NULL to int is unsupported" -- which is what happened:
+// the loader finished but could not write its terminal status, so the row stayed
+// pending (1) forever and the job never closed. Nullable columns are therefore
+// scanned through sql.Null* and coalesced.
 func (s *oracleStore) scanUploadLog(row *sql.Row) (*UploadLog, error) {
-	e := &UploadLog{}
-	err := row.Scan(&e.SerialNumber, &e.LastUpdated, &e.UpdatedUser, &e.InstitutionCode,
-		&e.InterfaceCode, &e.JobNumber, &e.FileName, &e.UploadDate, &e.UploadStatus,
-		&e.ProcessingDate, &e.BusinessDate, &e.FileID, &e.TotalAcceptedTxnCount,
-		&e.TotalTxnCount, &e.FormatCode, &e.Remarks)
+	var (
+		intCode, jobNo, total, accepted, forCode sql.NullInt64
+		fileName, fileID, remarks                sql.NullString
+		uploadDate, procDate, bussDate           sql.NullTime
+	)
+	var serialNumber int64
+	var lastUpdated time.Time
+	var updatedUser, insCode, status int
+	err := row.Scan(&serialNumber, &lastUpdated, &updatedUser, &insCode,
+		&intCode, &jobNo, &fileName, &uploadDate, &status,
+		&procDate, &bussDate, &fileID, &accepted,
+		&total, &forCode, &remarks)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return e, nil
+	return uploadLogFromRow(serialNumber, lastUpdated, updatedUser, insCode, status,
+		intCode, jobNo, forCode, fileName, remarks, total, accepted), nil
+}
+
+// uploadLogFromRow converts a scanned FILE_UPLOAD_LOG row into an entity,
+// coalescing the nullable columns.
+//
+// It exists as a separate pure function so the NULL handling is testable
+// without a database. Every column after UPL_UPLOAD_STATUS is NULLABLE, and a
+// freshly inserted pending row has NULL counts, NULL FOR_CODE and NULL REMARKS.
+// Scanning those straight into int/string failed with "converting NULL to int
+// is unsupported", so the loader could never write its terminal status and the
+// row stayed pending (1) forever.
+func uploadLogFromRow(
+	serialNumber int64, lastUpdated time.Time, updatedUser, insCode, status int,
+	intCode, jobNo, forCode sql.NullInt64,
+	fileName, remarks sql.NullString,
+	total, accepted sql.NullInt64,
+) *UploadLog {
+	e := &UploadLog{
+		SerialNumber:    serialNumber,
+		LastUpdated:     lastUpdated,
+		UpdatedUser:     updatedUser,
+		InstitutionCode: insCode,
+		UploadStatus:    status,
+		FileName:        fileName.String,
+		FileID:          fileName.String,
+	}
+	if remarks.Valid {
+		r := remarks.String
+		e.Remarks = &r
+	}
+	if intCode.Valid {
+		e.InterfaceCode = int(intCode.Int64)
+	}
+	if jobNo.Valid {
+		e.JobNumber = int(jobNo.Int64)
+	}
+	if total.Valid {
+		e.TotalTxnCount = int(total.Int64)
+	}
+	if accepted.Valid {
+		e.TotalAcceptedTxnCount = int(accepted.Int64)
+	}
+	if forCode.Valid {
+		e.FormatCode = int(forCode.Int64)
+	}
+	return e
 }
 
 const uploadLogSelect = `
@@ -416,12 +495,8 @@ func (s *oracleStore) FindJaywanRanges(ctx context.Context, low, high int64) ([]
 	defer rows.Close()
 	var out []*JaywanRange
 	for rows.Next() {
-		e := &JaywanRange{}
-		if err := rows.Scan(&e.SerialNumber, &e.LastUpdated, &e.UpdatedUser, &e.JobNumber,
-			&e.IssuerBank, &e.InstitutionID, &e.BinRangeLow, &e.BinRangeHigh, &e.PanLength,
-			&e.BinLength, &e.ProductType, &e.SchemeCode, &e.SchemeProduct, &e.CardType,
-			&e.Service, &e.CurrencyCode, &e.IsoNumCurrCode, &e.ActionTaken, &e.IssAccCap,
-			&e.ProdClssfy, &e.BadgeInd); err != nil {
+		e, err := jaywanRangeFromRow(rows)
+		if err != nil {
 			return nil, fmt.Errorf("binsvc: scan jaywan range: %w", err)
 		}
 		out = append(out, e)
@@ -462,6 +537,70 @@ func (s *oracleStore) InsertJaywanRange(ctx context.Context, e *JaywanRange) err
 		return fmt.Errorf("binsvc: insert jaywan range: %w", err)
 	}
 	return nil
+}
+
+// jaywanRangeNulls holds one JAYWAN_ISS_ACC_RANGE row as scanned. Every column
+// except SER_NUMBER, LAST_UPDATED and UPDATED_USER is nullable, and rows loaded
+// before job tracking existed carry JBS_PRJ_SER_NUMBER = NULL.
+type jaywanRangeNulls struct {
+	ser                               int64
+	updated                           time.Time
+	updatedBy                         int
+	job                               sql.NullInt64
+	issuer                            sql.NullString
+	insID, low, high, panLen, binLen  sql.NullInt64
+	prodType, schemeCd, schemePrd     sql.NullString
+	cardType, service, curCode        sql.NullInt64
+	isoCur                            sql.NullInt64
+	action, issAccCap, prodCls, badge sql.NullString
+}
+
+func (v *jaywanRangeNulls) scan(rows *sql.Rows) error {
+	return rows.Scan(&v.ser, &v.updated, &v.updatedBy, &v.job,
+		&v.issuer, &v.insID, &v.low, &v.high, &v.panLen,
+		&v.binLen, &v.prodType, &v.schemeCd, &v.schemePrd, &v.cardType,
+		&v.service, &v.curCode, &v.isoCur, &v.action, &v.issAccCap,
+		&v.prodCls, &v.badge)
+}
+
+// toJaywanRange collapses the nullable columns. This is the fix for the
+// duplicate-accumulation defect: scanning a NULL into a plain int/string made
+// database/sql fail the whole scan, and the caller uses this lookup to collect
+// the serials of rows it must replace -- on error it collected none. So every
+// load inserted on top of the existing ranges instead of replacing them and the
+// table grew by one full copy of the file per run (655 -> 1310 rows).
+func (v *jaywanRangeNulls) toJaywanRange() *JaywanRange {
+	return &JaywanRange{
+		SerialNumber:   v.ser,
+		LastUpdated:    v.updated,
+		UpdatedUser:    v.updatedBy,
+		JobNumber:      int(v.job.Int64),
+		IssuerBank:     v.issuer.String,
+		InstitutionID:  int(v.insID.Int64),
+		BinRangeLow:    v.low.Int64,
+		BinRangeHigh:   v.high.Int64,
+		PanLength:      int(v.panLen.Int64),
+		BinLength:      int(v.binLen.Int64),
+		ProductType:    v.prodType.String,
+		SchemeCode:     v.schemeCd.String,
+		SchemeProduct:  v.schemePrd.String,
+		CardType:       int(v.cardType.Int64),
+		Service:        int(v.service.Int64),
+		CurrencyCode:   int(v.curCode.Int64),
+		IsoNumCurrCode: int(v.isoCur.Int64),
+		ActionTaken:    v.action.String,
+		IssAccCap:      v.issAccCap.String,
+		ProdClssfy:     v.prodCls.String,
+		BadgeInd:       v.badge.String,
+	}
+}
+
+func jaywanRangeFromRow(rows *sql.Rows) (*JaywanRange, error) {
+	var v jaywanRangeNulls
+	if err := v.scan(rows); err != nil {
+		return nil, err
+	}
+	return v.toJaywanRange(), nil
 }
 
 func (s *oracleStore) DeleteJaywanRangeByJob(ctx context.Context, job int) error {
@@ -607,4 +746,12 @@ func (s *oracleStore) InsertMercuryRange(ctx context.Context, e *MercuryRange) e
 // violation (the DB-level cause of the duplicate filename rejection).
 func isUniqueViolation(err error) bool {
 	return err != nil && strings.Contains(strings.ToUpper(err.Error()), "ORA-00001")
+}
+
+func (s *oracleStore) DeleteJobBySerialNumber(ctx context.Context, ser int) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM PROCESSING_JOBS WHERE PRJ_SER_NUMBER = :1`, ser); err != nil {
+		return fmt.Errorf("binsvc: delete processing job %d: %w", ser, err)
+	}
+	return nil
 }

@@ -3,6 +3,7 @@ package binsvc
 import (
 	"context"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -122,6 +123,31 @@ func (f *fakeStore) DeleteUploadLogByFileName(_ context.Context, name string) er
 	return nil
 }
 func (f *fakeStore) GetBusinessDate(_ context.Context) (time.Time, error) { return f.bussDate, nil }
+
+// --- status surface (Settlement → BIN Files tab) ---
+
+func (f *fakeStore) DeleteJobBySerialNumber(_ context.Context, ser int) error {
+	f.jobs = slices.DeleteFunc(f.jobs, func(j *ProcessingJob) bool { return j.SerialNumber == int64(ser) })
+	return nil
+}
+
+func (f *fakeStore) RecentJobs(_ context.Context, limit int) ([]*ProcessingJob, error) {
+	if limit > len(f.jobs) {
+		limit = len(f.jobs)
+	}
+	return f.jobs[:limit], nil
+}
+
+func (f *fakeStore) RecentUploadLogs(_ context.Context, limit int) ([]*UploadLog, error) {
+	if limit > len(f.uploads) {
+		limit = len(f.uploads)
+	}
+	return f.uploads[:limit], nil
+}
+
+func (f *fakeStore) RangeTableCounts(_ context.Context) (map[string]int64, error) {
+	return map[string]int64{"MASTERCARD": 7, "VISA": 0, "UAESWITCH": 3}, nil
+}
 func (f *fakeStore) FindMcRange(_ context.Context, low, high, priority string) (*McRange, error) {
 	for _, e := range f.mcRanges {
 		if e.IssRangeLow == low && e.IssRangeHigh == high && e.PriorityCode == priority {
@@ -406,7 +432,7 @@ func mcRecord(cardProgID, activeCode string) string {
 	for i := range b {
 		b[i] = 'X'
 	}
-	copy(b[0:5], "26023")   // effective julian date YYDDD
+	copy(b[0:5], "26023")    // effective julian date YYDDD
 	copy(b[7:8], activeCode) // active code
 	copy(b[11:30], "5000000000000000000")
 	copy(b[30:33], "001")
@@ -651,11 +677,44 @@ func TestBinFileDeletion(t *testing.T) {
 		t.Fatalf("expected ranges and upload log to be deleted")
 	}
 
-	// not status 5 -> not allowed
-	store.uploads = append(store.uploads, &UploadLog{FileName: "busy.bin", UploadStatus: 4})
-	resp = svc.BinFileDeletion(context.Background(), "busy.bin", "MASTERCARD")
-	if resp.Message != "DELETION_NOT_ALLOWED; file deletion not allowed." {
+	// A row stuck at pending must be removable. It previously was not (only
+	// status 5 was allowed), which left no recovery path: the unique
+	// FILE_UPLOAD_LOG.UPL_FILE_NAME blocked a re-process and the deletion gate
+	// blocked a removal, so the file could never be loaded again.
+	store.uploads = append(store.uploads, &UploadLog{
+		SerialNumber: 9, FileName: "stuck.bin", UploadStatus: 1, JobNumber: 4,
+	})
+	store.jobs = append(store.jobs, &ProcessingJob{SerialNumber: 4})
+	resp = svc.BinFileDeletion(context.Background(), "stuck.bin", "UAESWITCH")
+	if resp.Message != "File deleted successfully." {
+		t.Fatalf("pending row should be removable, got %q", resp.Message)
+	}
+	for _, u := range store.uploads {
+		if u.FileName == "stuck.bin" {
+			t.Error("pending row was not removed from the upload log")
+		}
+	}
+	for _, j := range store.jobs {
+		if j.SerialNumber == 4 {
+			t.Error("orphaned PROCESSING_JOBS row was not removed")
+		}
+	}
+
+	// A completed load (4) is also removable -- that is the inverse of loading.
+	store.uploads = append(store.uploads, &UploadLog{FileName: "done.bin", UploadStatus: 4})
+	resp = svc.BinFileDeletion(context.Background(), "done.bin", "MASTERCARD")
+	if resp.Message != "File deleted successfully." {
+		t.Fatalf("completed row should be removable, got %q", resp.Message)
+	}
+
+	// Any other status is still refused, and says which one.
+	store.uploads = append(store.uploads, &UploadLog{FileName: "weird.bin", UploadStatus: 42})
+	resp = svc.BinFileDeletion(context.Background(), "weird.bin", "MASTERCARD")
+	if !strings.HasPrefix(resp.Message, "DELETION_NOT_ALLOWED;") {
 		t.Fatalf("message = %q", resp.Message)
+	}
+	if !strings.Contains(resp.Message, "42") {
+		t.Errorf("refusal should name the status, got %q", resp.Message)
 	}
 
 	// missing -> not found

@@ -4,22 +4,22 @@ import "time"
 
 // UploadLog is the Go port of FileUploadLogEntity (FILE_UPLOAD_LOG).
 type UploadLog struct {
-	SerialNumber        int64
-	LastUpdated         time.Time
-	UpdatedUser         int
-	InstitutionCode     int
-	InterfaceCode       int
-	JobNumber           int
-	FileName            string
-	UploadDate          time.Time
-	UploadStatus        int
-	ProcessingDate      time.Time
-	BusinessDate        time.Time
-	FileID              string
+	SerialNumber          int64
+	LastUpdated           time.Time
+	UpdatedUser           int
+	InstitutionCode       int
+	InterfaceCode         int
+	JobNumber             int
+	FileName              string
+	UploadDate            time.Time
+	UploadStatus          int
+	ProcessingDate        time.Time
+	BusinessDate          time.Time
+	FileID                string
 	TotalAcceptedTxnCount int
-	TotalTxnCount       int
-	FormatCode          int
-	Remarks             *string
+	TotalTxnCount         int
+	FormatCode            int
+	Remarks               *string
 }
 
 // ProcessingJob is the Go port of ProcessingJobsEntity (PROCESSING_JOBS).
@@ -37,47 +37,47 @@ type ProcessingJob struct {
 
 // McRange is the Go port of MCIssAcqRangeEntity (MC_ISS_ACC_RANGE).
 type McRange struct {
-	SerialNumber        int64
-	LastUpdated         time.Time
-	UpdatedUser         int
-	JobSerialNumber     int
-	EffectiveDate       time.Time
-	ActiveCode          string
-	IssRangeLow         string
-	GcmsProductID       string
-	IssRangeHigh        string
-	CardProgID          string
-	PriorityCode        string
-	MemberID            string
-	ProdTypeID          string
-	EndPoint            string
-	CountryAlphaCode    string
-	CountryCode         string
-	Region              string
-	ProductClass        string
-	TxnRoutInd          string
-	FpReasignSwitch     string
-	ProdReasignSwitch   string
-	PwcbSwitch          string
-	LicProdID           string
-	MapServInd          string
-	AccLevelInd         string
-	ChBillCurr          string
-	ChBillCurrExp       string
-	ChipServInd         string
-	FloorExpDate        string
-	CoBrandSwitch       string
-	SpendControlSwitch  string
-	MeCleansingService  string
-	MePayPassInd        string
-	RateTypeInd         string
-	PsnRouteInd         string
-	CbWithoutPurchase   string
-	RepowerReloadInd    string
-	MoneySendInd        string
-	DurbinRateInd       string
-	BussDate            *time.Time
-	GenStatus           int
+	SerialNumber       int64
+	LastUpdated        time.Time
+	UpdatedUser        int
+	JobSerialNumber    int
+	EffectiveDate      time.Time
+	ActiveCode         string
+	IssRangeLow        string
+	GcmsProductID      string
+	IssRangeHigh       string
+	CardProgID         string
+	PriorityCode       string
+	MemberID           string
+	ProdTypeID         string
+	EndPoint           string
+	CountryAlphaCode   string
+	CountryCode        string
+	Region             string
+	ProductClass       string
+	TxnRoutInd         string
+	FpReasignSwitch    string
+	ProdReasignSwitch  string
+	PwcbSwitch         string
+	LicProdID          string
+	MapServInd         string
+	AccLevelInd        string
+	ChBillCurr         string
+	ChBillCurrExp      string
+	ChipServInd        string
+	FloorExpDate       string
+	CoBrandSwitch      string
+	SpendControlSwitch string
+	MeCleansingService string
+	MePayPassInd       string
+	RateTypeInd        string
+	PsnRouteInd        string
+	CbWithoutPurchase  string
+	RepowerReloadInd   string
+	MoneySendInd       string
+	DurbinRateInd      string
+	BussDate           *time.Time
+	GenStatus          int
 }
 
 // VisaRange is the Go port of VisaIssAcqRangeEntity (VISA_ISS_ACC_RANGE).

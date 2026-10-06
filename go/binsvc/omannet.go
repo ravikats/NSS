@@ -25,7 +25,7 @@ type omanNetCell struct {
 // OMANNET_BIN_DATA rows (genStatus 4; 7 for rejected rows).
 func (p *omanProcessor) processOmanNetBin(ctx context.Context, fileName string, jobSer, uplSer int) {
 	s := p.svc
-	filePath := s.Cfg.ReconIn + fileName
+	filePath := s.inputPath(fileName)
 	s.log().Info("OMANNET BIN FILE PROCESSING STARTED", "file", fileName)
 
 	f, err := excelize.OpenFile(filePath)

@@ -19,7 +19,7 @@ type mercuryProcessor struct {
 // 4=cardVariant, 5=cardScheme, 6=currencyCode, 7=countryCode, 8=status).
 func (p *mercuryProcessor) processMercuryBin(ctx context.Context, fileName string, jobSer, uplSer int) {
 	s := p.svc
-	filePath := s.Cfg.ReconIn + fileName
+	filePath := s.inputPath(fileName)
 	s.log().Info("MERCURY BIN FILE PROCESSING STARTED", "file", fileName)
 
 	f, err := os.Open(filePath)

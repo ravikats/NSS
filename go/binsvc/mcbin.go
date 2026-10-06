@@ -13,7 +13,7 @@ type mcProcessor struct {
 }
 
 var (
-	mcDelimiter   = []byte{2, 3, 0} // STX / ETX / NUL
+	mcDelimiter   = []byte{2, 3, 0}                                   // STX / ETX / NUL
 	mcSeparators  = map[byte]bool{0xb8: true, 0xa9: true, 0xc2: true} // \u00b8 \u00a9 \u00c2
 	mcTrailerMark = []byte("PTRAILER RECORD IP0040T1")
 	mcCardProgs   = map[string]bool{"DMC": true, "MCC": true, "MSI": true, "PVL": true}
@@ -23,7 +23,7 @@ var (
 // T067/T068 file (raw bytes preserved as-is, matching the Java char reads),
 // inserting a MC_ISS_ACC_RANGE row per record between separator delimiters.
 func (p *mcProcessor) processMCBin(ctx context.Context, fileName string, jobSer, uplSer int) {
-	filePath := p.svc.Cfg.ReconIn + fileName
+	filePath := p.svc.inputPath(fileName)
 	s := p.svc
 	s.log().Info("MC BIN FILE PROCESSING STARTED", "file", fileName)
 
@@ -83,44 +83,44 @@ func (p *mcProcessor) insertMcIssAccRange(ctx context.Context, jobSer, user int,
 		return
 	}
 	e := &McRange{
-		UpdatedUser:     user,
-		JobSerialNumber: jobSer,
-		ActiveCode:      line[7:8],
-		IssRangeLow:     line[11:30],
-		GcmsProductID:   line[30:33],
-		IssRangeHigh:    line[33:52],
-		CardProgID:      line[52:55],
-		PriorityCode:    line[55:57],
-		MemberID:        line[57:68],
-		ProdTypeID:      line[68:69],
-		EndPoint:        line[69:76],
-		CountryAlphaCode: line[76:79],
-		CountryCode:     line[79:82],
-		Region:          line[82:83],
-		ProductClass:    line[83:86],
-		TxnRoutInd:      line[86:87],
-		FpReasignSwitch: line[87:88],
-		ProdReasignSwitch: line[88:89],
-		PwcbSwitch:      line[89:90],
-		LicProdID:       line[90:93],
-		MapServInd:      line[93:94],
-		AccLevelInd:     line[94:95],
-		ChBillCurr:      line[101:104],
-		ChBillCurrExp:   line[104:105],
-		ChipServInd:     line[133:134],
-		FloorExpDate:    line[134:140],
-		CoBrandSwitch:   line[140:141],
+		UpdatedUser:        user,
+		JobSerialNumber:    jobSer,
+		ActiveCode:         line[7:8],
+		IssRangeLow:        line[11:30],
+		GcmsProductID:      line[30:33],
+		IssRangeHigh:       line[33:52],
+		CardProgID:         line[52:55],
+		PriorityCode:       line[55:57],
+		MemberID:           line[57:68],
+		ProdTypeID:         line[68:69],
+		EndPoint:           line[69:76],
+		CountryAlphaCode:   line[76:79],
+		CountryCode:        line[79:82],
+		Region:             line[82:83],
+		ProductClass:       line[83:86],
+		TxnRoutInd:         line[86:87],
+		FpReasignSwitch:    line[87:88],
+		ProdReasignSwitch:  line[88:89],
+		PwcbSwitch:         line[89:90],
+		LicProdID:          line[90:93],
+		MapServInd:         line[93:94],
+		AccLevelInd:        line[94:95],
+		ChBillCurr:         line[101:104],
+		ChBillCurrExp:      line[104:105],
+		ChipServInd:        line[133:134],
+		FloorExpDate:       line[134:140],
+		CoBrandSwitch:      line[140:141],
 		SpendControlSwitch: line[141:142],
 		MeCleansingService: line[142:145],
-		MePayPassInd:    line[151:152],
-		RateTypeInd:     line[152:153],
-		PsnRouteInd:     line[153:154],
-		CbWithoutPurchase: line[154:155],
-		RepowerReloadInd: line[156:157],
-		MoneySendInd:    line[157:158],
-		DurbinRateInd:   line[158:159],
-		GenStatus:       1,
-		BussDate:        businessDate,
+		MePayPassInd:       line[151:152],
+		RateTypeInd:        line[152:153],
+		PsnRouteInd:        line[153:154],
+		CbWithoutPurchase:  line[154:155],
+		RepowerReloadInd:   line[156:157],
+		MoneySendInd:       line[157:158],
+		DurbinRateInd:      line[158:159],
+		GenStatus:          1,
+		BussDate:           businessDate,
 	}
 	eff, err := p.svc.convertToGregorianDate(line[0:5])
 	if err != nil {
@@ -160,5 +160,5 @@ func (p *mcProcessor) fail(ctx context.Context, uplSer int, fileName string) {
 	if err := p.svc.Store.UpdateUploadLog(ctx, e); err != nil {
 		p.svc.log().Error("fail: update upload log", "err", err)
 	}
-	p.svc.moveFile(p.svc.Cfg.ReconIn+fileName, fileName, p.svc.Cfg.ReconRejected)
+	p.svc.moveFile(p.svc.inputPath(fileName), fileName, p.svc.Cfg.ReconRejected)
 }

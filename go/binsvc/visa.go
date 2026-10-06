@@ -17,7 +17,7 @@ type visaProcessor struct {
 // wipe VISA_ISS_ACC_RANGE, then re-insert from the fixed-width lines.
 func (p *visaProcessor) processVisaBin(ctx context.Context, fileName string, jobSer, uplSer int) {
 	s := p.svc
-	filePath := s.Cfg.ReconIn + fileName
+	filePath := s.inputPath(fileName)
 	s.log().Info("VISA BIN FILE PROCESSING STARTED", "file", fileName)
 
 	data, err := os.ReadFile(filePath)

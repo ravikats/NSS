@@ -122,6 +122,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /bin/v1/processBin", binHandler(svc))
 	mux.HandleFunc("DELETE /bin/v1/deleteBinFile", deleteHandler(svc))
+	mux.HandleFunc("GET /bin/v1/status", statusHandler(svc, port))
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, "OK")
@@ -181,7 +182,11 @@ func deleteHandler(svc *binsvc.Service) http.HandlerFunc {
 
 func isNetwork(n string) bool {
 	switch strings.ToUpper(n) {
-	case "MASTERCARD", "VISA", "JAYWAN", "OMANNET", "MERCURY":
+	case "MASTERCARD", "VISA", "JAYWAN", "UAESWITCH", "OMANNET", "MERCURY":
+		// UAESWITCH is accepted as an alias of JAYWAN: the uaeswitch POS BIN
+		// file is Jaywan's and loads into JAYWAN_ISS_ACC_RANGE. It was missing
+		// here while the status endpoint and the upload API both advertised it,
+		// so every UAESWITCH dispatch failed with "Invalid network".
 		return true
 	}
 	return false

@@ -21,7 +21,7 @@ type jaywanProcessor struct {
 // 14=issAccCap, 15=prodClssfy, 16=badgeInd).
 func (p *jaywanProcessor) processJaywanBin(ctx context.Context, fileName string, jobSer, uplSer int) {
 	s := p.svc
-	filePath := s.Cfg.ReconIn + fileName
+	filePath := s.inputPath(fileName)
 	s.log().Info("JAYWAN BIN FILE PROCESSING STARTED", "file", fileName)
 
 	f, err := os.Open(filePath)
