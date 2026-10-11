@@ -5,7 +5,25 @@ Do not report changes elaborately. Focus on actual work (tool calls, code,
 fixes) and keep narrative output to a minimum unless the user asks for detail.
 
 ## Go module layout
-The Go code lives under `go/` (module `empay/irf`, go.mod at `go/go.mod`).
+**Canonical location is `switch/NSS/irf-go`** (module `empay/irf`, go.mod there),
+version-controlled in the `switch` repo as of commit `c683dca`. Paths below are
+written relative to that tree; substitute the real path when working.
+
+Do NOT build from `IRF/go`. It is a stale git-tracked fork, last touched by
+commit `5bc2812` (2026-10-06), and is missing work the live tree has
+(`SetValidationHook` wiring, `validationsLoaded`, `scheduleFileProcessing`
+result logging, plus the `mercury`/`unionpay`/`amex` outsvc files). It was
+deleted from the working tree once already and restored in error; if you find
+it missing, do not `git checkout` it back. It is a duplicate, not a fallback.
+
+`IRF1/go` was deleted 2026-10-11 as fully superseded — its crypto functions moved
+to the shared `cryptapi` package, `ProcessTxn` became `Stage1`+`Stage2`, and all
+10 functions of `outsvc/mc.go` exist in `outsvc/service.go` / `outsvc/mastercard.go`.
+The one thing it uniquely held was `postmanTxnHandler`, the
+`POST /tlf/v1/PostmanTxn` manual payload-injection endpoint; the live
+`tlf-service` is Kafka-only and has no HTTP ingest route. A copy was kept at
+`/tmp/opencode/IRF1-go-backup/go` in case it needs porting.
+
 The system Go (`/usr/bin/go`) is go1.18 and cannot build this module. Use the
 downloaded toolchain from the module cache instead:
 
@@ -14,7 +32,45 @@ export GOTOOLCHAIN=go1.25.13
 export PATH=/home/ravi/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.13.linux-amd64/bin:$PATH
 ```
 
-## Build / verify commands (run from `go/`, with the toolchain env above)
+### Credentials
+`ORACLE_DSN` is required and has **no** default. As of `c683dca` the hardcoded
+fallback DSNs in `cmd/dbutil`, `cmd/mercury-seed` and `cmd/mercury-seed-real`
+were removed, and `outsvc/daterange_test.go` (a live-DB guard) skips unless
+`ORACLE_DSN` is set. Do not reintroduce a default DSN with an inline password.
+
+## Status semantics (verified 2026-10-11)
+
+Success/fail of a transaction is driven by the **response code the parser
+stored** (`respCode == "00"`). Where each POS row status comes from:
+
+| `PTR_GEN_STATUS` | `PTR_OUT_STATUS` | Set by | Trigger |
+|---|---|---|---|
+| 7 | `null` | `tlf-finalize` `FinalizeService:330` | **CryptAPI returned no PAN** |
+| 3 | `"NA"` | `FinalizeService:355` | `outgoingStatusCheck` false |
+| 4 | `"Marked for Outgoing"` | `FinalizeService:471+` | staged to a work table |
+| 6 | — | outgoing, e.g. `store.go:1214`, `mercury_store.go:228` | file generated |
+
+Two traps that caused a long misdiagnosis:
+
+- **`PTR_GEN_STATUS=7` does NOT mean "resp code != 00".** It has exactly one
+  writer (the CryptAPI no-PAN branch). Declines never reach it.
+- **Non-00 resp codes never enter a work table at all.**
+  `TxnProcessingService.outgoingStatusCheck` gates on `"00".equals(responseCode)`
+  in every branch, so a decline parks at status 3 / `NA`. It is "ineligible",
+  not "failed".
+
+Work-table `gen_status=7` is a *different* thing with a different owner: the
+outgoing service sets it itself when CryptAPI decryption fails during file
+generation (see §3.2 step l).
+
+**The `getTxnCount` comment lies.** `outsvc/service.go` says it "counts work rows
+with gen_status=3 (READY) or 7 (FAILED) ... allows retry/reprocessing", but every
+call passes only `3` — across all six networks, in both the from-less and ranged
+branches. Same for the `Find*Work*` fetches in `mercury.go`, `visa.go`,
+`jaywan.go`, `unionpay.go`, `amex.go`. Status 7 is never queried. Treat that
+comment as unimplemented intent, not behaviour.
+
+## Build / verify commands (run from `switch/NSS/irf-go`, with the toolchain env above)
 - `go build ./...`
 - `go vet ./...`
 - `go test ./...`              # all packages, including tlfsvc (fake-store IRF flow tests)
