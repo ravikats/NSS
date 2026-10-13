@@ -117,6 +117,19 @@ func ParseAmount(s string) float64 {
 // UpdateTxnDatetime mirrors TxnProcessingService.updateTxnDatetime:
 // transmission_date is MMddhhmmss; the current year is prepended and shifted
 // back a year if it lands in the future.
+// UpdateTxnDatetime converts the network's DE7 timestamp into a local-time
+// instant.
+//
+// DE7 carries the transaction time every network reports in UTC, and it arrives
+// without a year (MMDDHH24MISS). It was previously parsed with time.Parse,
+// which yields a UTC-located time that was then stored verbatim -- so
+// POS_TRANSACTIONS.PTR_TXN_DATE_TIME held UTC and read 5.5h behind the switch
+// clock. The year is inferred first, on the UTC instant, then the result is
+// converted to local for storage and display.
+//
+// The year inference compares instants, so it stays correct across the zone
+// boundary: it asks "is this UTC moment after now?", not "does the wall clock
+// say so".
 func UpdateTxnDatetime(dateTime string, now time.Time) *time.Time {
 	if len(dateTime) < 4 {
 		return nil
@@ -134,12 +147,20 @@ func UpdateTxnDatetime(dateTime string, now time.Time) *time.Time {
 		padded += "0"
 	}
 	layout := padded[:8] + " " + padded[8:10] + ":" + padded[10:12] + ":" + padded[12:14]
-	t, err := time.Parse("20060102 15:04:05", layout)
+	// The network value is UTC; say so explicitly rather than inheriting the
+	// zero-offset default, then convert for storage.
+	t, err := time.ParseInLocation("20060102 15:04:05", layout, time.UTC)
 	if err != nil {
 		return nil
 	}
-	return &t
+	local := t.In(TxnLocalZone())
+	return &local
 }
+
+// TxnLocalZone is the location transaction timestamps are stored in. Defaults
+// to the host zone (IST on the UAE deployment); overridable for tests and for a
+// site running a different clock.
+var TxnLocalZone = func() *time.Location { return time.Local }
 
 // UpdateLocalDatetime mirrors TxnProcessingService.updateLocalDatetime:
 // local_date is MMdd, local_time is hhmmss.
