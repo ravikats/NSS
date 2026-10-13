@@ -2,6 +2,9 @@ package outsvc
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -29,6 +32,22 @@ type OutgoingConfig struct {
 	VersionNumber      string
 	UnionPayVersionTag string
 	Region             string
+
+	// ReapStaleWorkAge is how long a Mastercard work row may sit at
+	// gen_status 9 (in flight) before the reaper returns it to 3 (ready).
+	//
+	// A row is claimed at the very start of generation and released at the
+	// very end. Anything that aborts in between -- a write error, a panic, a
+	// killed process -- leaves it at 9 forever: getTxnCount only counts 3, so
+	// the row becomes invisible and is never retried. The reaper is what makes
+	// that self-healing.
+	//
+	// Must comfortably exceed the slowest legitimate generation, or the reaper
+	// will yank rows out from under a run that is still working. 10 minutes is
+	// generous; Mastercard generation completes in seconds.
+	ReapStaleWorkAge time.Duration
+	// ReapInterval is how often the reaper sweeps. 0 or negative disables it.
+	ReapInterval time.Duration
 
 	// IPMValidationStrict controls what happens when a generated Mastercard
 	// IPM file fails compliance validation.
@@ -99,20 +118,52 @@ const outgoingDateLayout = "02/01/2006 15:04:05"
 // ProcessAndMoveData is the Go port of
 // OutGoingProcessingService.processAndMoveData.
 func (s *OutgoingService) ProcessAndMoveData(ctx context.Context, vo *OutGoingRequestVo, insCode, user, formatCode int, insShortName string) string {
-	fromDate, err1 := time.Parse(outgoingDateLayout, vo.FromDate)
-	toDate, err2 := time.Parse(outgoingDateLayout, vo.ToDate)
-	if err1 != nil || err2 != nil {
+	// A date range is OPTIONAL narrowing, not the eligibility test. Eligibility
+	// is gen_status=3 (ready); omitting fromDate/toDate means "everything
+	// ready, whatever it is dated".
+	//
+	// This matters because MCT_LOCAL_DATE_TIME is stamped when the row is
+	// staged, so a caller-supplied upper bound silently excludes rows that were
+	// staged after that instant -- the service would report "no transactions to
+	// stage" while the console's (unfiltered) work count showed them waiting.
+	fromDate, toDate, ok := parseOptionalRange(vo.FromDate, vo.ToDate)
+	if !ok {
 		return "Invalid date time format "
 	}
-	if toDate.Before(fromDate) {
-		return "From date is greater than To Date date time format "
-	}
-	txnCount := s.getTxnCount(ctx, vo.Network, insCode, &fromDate, &toDate)
+	txnCount := s.getTxnCount(ctx, vo.Network, insCode, fromDate, toDate)
 	if txnCount == 0 {
 		return "There are no transactions to stage!"
 	}
-	s.scheduleFileProcessing(ctx, insCode, user, formatCode, insShortName, vo.Network, &fromDate, &toDate)
+	s.scheduleFileProcessing(ctx, insCode, user, formatCode, insShortName, vo.Network, fromDate, toDate)
 	return "Outgoing File Processing Scheduled Successfully."
+}
+
+// parseOptionalRange parses the requested window. Either both ends are empty
+// (meaning "no date narrowing") or both must be valid and correctly ordered; a
+// half-specified range is rejected rather than silently treated as unbounded.
+//
+// An unbounded request returns fromDate=nil plus a far-future toDate, because
+// the store's "*LessThanEqual" selectors still require an upper bound. That
+// keeps every downstream call site on its existing path while making
+// eligibility depend on gen_status alone.
+func parseOptionalRange(fromStr, toStr string) (from, to *time.Time, ok bool) {
+	fromStr, toStr = strings.TrimSpace(fromStr), strings.TrimSpace(toStr)
+	if fromStr == "" && toStr == "" {
+		far := time.Now().AddDate(50, 0, 0)
+		return nil, &far, true
+	}
+	if fromStr == "" || toStr == "" {
+		return nil, nil, false
+	}
+	f, err1 := time.Parse(outgoingDateLayout, fromStr)
+	t, err2 := time.Parse(outgoingDateLayout, toStr)
+	if err1 != nil || err2 != nil {
+		return nil, nil, false
+	}
+	if t.Before(f) {
+		return nil, nil, false
+	}
+	return &f, &t, true
 }
 
 // getTxnCount counts gen_status=3 work rows for the network/date range.
@@ -212,6 +263,50 @@ func (s *OutgoingService) getTxnCount(ctx context.Context, network string, insCo
 		return n
 	}
 	return 0
+}
+
+// StartReaper launches the background sweep that returns stale in-flight
+// Mastercard work rows to the ready state. Safe to call once; a nil store or a
+// non-positive interval disables it.
+func (s *OutgoingService) StartReaper(ctx context.Context) {
+	if s == nil || s.store == nil || s.cfg.ReapInterval <= 0 {
+		return
+	}
+	age := s.cfg.ReapStaleWorkAge
+	if age <= 0 {
+		age = 10 * time.Minute
+	}
+	go func() {
+		t := time.NewTicker(s.cfg.ReapInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				s.ReapStaleWork(ctx, age)
+			}
+		}
+	}()
+}
+
+// ReapStaleWork performs one sweep. Exported separately from the loop so it can
+// be invoked directly (and tested) without waiting on a ticker.
+func (s *OutgoingService) ReapStaleWork(ctx context.Context, age time.Duration) {
+	now := s.now()
+	cutoff := now.Add(-age)
+	n, err := s.store.ReapStaleMcWork(ctx, s.cfg.InsCode, 9, cutoff, now)
+	if err != nil {
+		logOutsvc("ReapStaleWork", err)
+		return
+	}
+	if n > 0 {
+		// Loud on purpose: these rows were stranded by a run that died between
+		// claim and release. They were invisible to getTxnCount until now.
+		fmt.Fprintf(os.Stderr,
+			"outsvc: reaped %d stale MC work row(s) at gen_status=9 back to 3 (older than %s)\n",
+			n, age)
+	}
 }
 
 // scheduleFileProcessing runs the network-specific generation in the

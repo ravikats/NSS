@@ -33,8 +33,23 @@ type Store interface {
 	FindMcWorkBetween(ctx context.Context, ins, status int, from, to time.Time) ([]*McAcqTxnWorkEntity, error)
 	FindMcWorkLessThanEqual(ctx context.Context, ins, status int, to time.Time) ([]*McAcqTxnWorkEntity, error)
 	FindMcWorkByStatus(ctx context.Context, ins, status int) ([]*McAcqTxnWorkEntity, error)
+	// FindMcWorkByFileId scopes work rows to one generation run. The claim
+	// (gen_status 3 -> 9) stamps MCT_FILE_ID with the file NAME, so every
+	// subsequent step must select by that same value -- not by status alone.
+	// Selecting by status alone sweeps rows belonging to a concurrent run.
+	FindMcWorkByFileId(ctx context.Context, ins int, fileId string, status int) ([]*McAcqTxnWorkEntity, error)
+	// ReapStaleMcWork returns in-flight (gen_status 9) rows that have not been
+	// touched since olderThan back to the ready state (3), clearing the file id
+	// so the next run re-claims them cleanly. This is the self-healing path for
+	// a run that died between claim and release: without it such rows are
+	// invisible to getTxnCount (which only counts 3) and are never retried.
+	ReapStaleMcWork(ctx context.Context, ins int, status int, olderThan, now time.Time) (int64, error)
 	UpdateMcWorkStatuses(ctx context.Context, ents []*McAcqTxnWorkEntity) error
 	FailMcWorkByFileId(ctx context.Context, ins int, fileId string) error
+	// CompletePosStatusForFile flips only the POS rows covered by one file.
+	// The unscoped variant must not be used by generation: it matches on
+	// "any work row at gen_status 4" and would complete unrelated schemes.
+	CompletePosStatusForFile(ctx context.Context, ins int, fileId string) error
 	DeleteMcWork(ctx context.Context, ents []*McAcqTxnWorkEntity) error
 
 	FindViewIpmOutWorkAll(ctx context.Context) ([]*ViewIpmOutWorkEntity, error)
@@ -618,6 +633,53 @@ func (s *oracleStore) FindMcWorkByStatus(ctx context.Context, ins, status int) (
 	return bindMcWork(rows)
 }
 
+func (s *oracleStore) FindMcWorkByFileId(ctx context.Context, ins int, fileId string, status int) ([]*McAcqTxnWorkEntity, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT * FROM MC_ACQ_TXN_WORK
+		WHERE MCT_INS_CODE = :1 AND MCT_FILE_ID = :2 AND MCT_GEN_STATUS = :3`, ins, fileId, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return bindMcWork(rows)
+}
+
+// ReapStaleMcWork is a safety net for runs that died between claiming rows
+// (gen_status 9) and releasing them.
+//
+// Timestamps are bound as time.Time, exactly as UpdateFileLog does for
+// OFL_LAST_UPDATED.
+//
+// The bind numbers below are in ORDER OF APPEARANCE in the statement, and that
+// is deliberate: this driver binds positionally, not by name. An earlier
+// version wrote the SET clause against :4 and passed the arguments as
+// (ins, status, olderThan, now), so every value landed one slot off -- the
+// driver fed a TIMESTAMP into MCT_GEN_STATUS and failed with ORA-00932.
+//
+// SYSDATE is deliberately NOT used: MCT_LAST_UPDATED is written by the staging
+// side in application time, and on this deployment the DB clock runs ~4.8h
+// behind it, so stamping SYSDATE would corrupt the column for later
+// comparisons and immediately re-trip this sweep.
+//
+// now is stamped onto each reaped row so a row that is re-claimed and stranded
+// again cannot be reaped out from under the run that just claimed it.
+func (s *oracleStore) ReapStaleMcWork(ctx context.Context, ins int, status int, olderThan, now time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE MC_ACQ_TXN_WORK
+		   SET MCT_GEN_STATUS = :1,
+		       MCT_FILE_ID = NULL,
+		       MCT_LAST_UPDATED = :2
+		 WHERE MCT_INS_CODE = :3
+		   AND MCT_GEN_STATUS = :4
+		   AND MCT_LAST_UPDATED < :5`,
+		3, now, ins, status, olderThan)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return n, err
+}
+
 func bindMcWork(rows *sql.Rows) ([]*McAcqTxnWorkEntity, error) {
 	maps, err := rowsToMaps(rows)
 	if err != nil {
@@ -1048,5 +1110,24 @@ func (s *oracleStore) CompletePosStatus(ctx context.Context, ins int) error {
 		AND pos.PTR_NETWORK IN ('MCI','MDS')
 		AND pos.PTR_GEN_STATUS = 4
 		AND pos.PTR_INS_CODE = :1`, ins)
+	return err
+}
+
+// CompletePosStatusForFile is the file-scoped form used by generation. It must
+// not fall back to the unscoped variant: that one completes every MCI/MDS POS
+// row whose reference appears in ANY work row at gen_status 4, so two
+// overlapping runs would complete each other's transactions.
+func (s *oracleStore) CompletePosStatusForFile(ctx context.Context, ins int, fileId string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE POS_TRANSACTIONS pos SET
+		  pos.PTR_GEN_STATUS = 6,
+		  pos.PTR_OUT_STATUS = 'Completed'
+		WHERE pos.PTR_RET_REF_NUMBER IN (
+		  SELECT mc.MCT_RET_REF_NUMBER FROM MC_ACQ_TXN_WORK mc
+		  WHERE mc.MCT_GEN_STATUS = 4 AND mc.MCT_FILE_ID = :2
+		)
+		AND pos.PTR_NETWORK IN ('MCI','MDS')
+		AND pos.PTR_GEN_STATUS = 4
+		AND pos.PTR_INS_CODE = :1`, ins, fileId)
 	return err
 }

@@ -203,13 +203,19 @@ func (p *IpmOutProcessor) IpmPro(ctx context.Context, fileName, processorId stri
 	recCnt := 0
 	var amount int64
 	var fileID string
+	// claimed is how many work rows this run moved into flight (3 -> 9).
+	// completeMC compares it against what it can actually see, so a run whose
+	// rows vanished mid-flight reports loudly instead of silently succeeding.
+	claimed := 0
 
 	if fileType == "GCO" {
 		if err := p.callGCOIpmOutWorkEntity(ctx, insCode, fileName, fromDate, toDate); err != nil {
 			logOutsvc("callGCOIpmOutWorkEntity()", err)
 		}
 	} else {
-		if err := p.callIpmOutWorkEntity(ctx, insCode, fileName, fromDate, toDate); err != nil {
+		n, err := p.callIpmOutWorkEntity(ctx, insCode, fileName, fromDate, toDate)
+		claimed = n
+		if err != nil {
 			logOutsvc("callIpmOutWorkEntity()", err)
 		}
 	}
@@ -348,7 +354,7 @@ func (p *IpmOutProcessor) IpmPro(ctx context.Context, fileName, processorId stri
 			return ""
 		}
 	} else {
-		if err := p.completeMC(ctx, insCode, userSerNumber, fileID); err != nil {
+		if err := p.completeMC(ctx, insCode, userSerNumber, fileID, fileName, claimed); err != nil {
 			logOutsvc("completeMC", err)
 			return ""
 		}
@@ -663,7 +669,7 @@ func (p *IpmOutProcessor) createFooterMessage(logf io.Writer, out io.Writer, amo
 
 // callIpmOutWorkEntity marks MC work rows gen_status 9, materialises
 // VW_IPM_OUT_WORK into IPM_OUT_WORK for this file and writes the report data.
-func (p *IpmOutProcessor) callIpmOutWorkEntity(ctx context.Context, insCode int, fileName string, fromDate, toDate *time.Time) error {
+func (p *IpmOutProcessor) callIpmOutWorkEntity(ctx context.Context, insCode int, fileName string, fromDate, toDate *time.Time) (int, error) {
 	var fetched []*McAcqTxnWorkEntity
 	var err error
 	if fromDate == nil {
@@ -672,31 +678,31 @@ func (p *IpmOutProcessor) callIpmOutWorkEntity(ctx context.Context, insCode int,
 		fetched, err = p.store.FindMcWorkBetween(ctx, insCode, 3, *fromDate, *toDate)
 	}
 	if err != nil {
-		return err
+		return 0, err
 	}
 	for _, e := range fetched {
 		e.GeneralStatus = 9
 		e.FileID = fileName
 	}
 	if err := p.store.UpdateMcWorkStatuses(ctx, fetched); err != nil {
-		return err
+		return 0, err
 	}
 	view, err := p.store.FindViewIpmOutWorkAll(ctx)
 	if err != nil {
-		return err
+		return len(fetched), err
 	}
 	ipmOut := make([]*IpmOutWorkEntity, 0, len(view))
 	for _, v := range view {
 		ipmOut = append(ipmOut, mapViewToIpmOut(insCode, fileName, v))
 	}
 	if err := p.store.InsertIpmOutWork(ctx, ipmOut); err != nil {
-		return err
+		return len(fetched), err
 	}
 	// processData failures are logged, never fatal (Java behaviour).
 	if err := p.processData(ctx, view, insCode, fileName); err != nil {
 		logOutsvc("processData()", err)
 	}
-	return nil
+	return len(fetched), nil
 }
 
 func mapViewToIpmOut(insCode int, fileName string, v *ViewIpmOutWorkEntity) *IpmOutWorkEntity {
@@ -876,10 +882,26 @@ func (p *IpmOutProcessor) buildAndSaveSummaries(ctx context.Context, insCode, in
 
 // completeMC marks work rows complete, updates POS transactions and moves
 // work -> data (Java's completePosStatus + moveWorkToData).
-func (p *IpmOutProcessor) completeMC(ctx context.Context, insCode, userSerNumber int, fileID string) error {
-	work, err := p.store.FindMcWorkByStatus(ctx, insCode, 9)
+//
+// Everything here is scoped to the run's own file. flightName is the value the
+// claim stamped into MCT_FILE_ID; fileID is the real network file id written on
+// release. Selecting by gen_status alone (the old behaviour) swept every
+// in-flight row in the institution, so overlapping runs completed each other's
+// rows and stamped the wrong file id on them.
+func (p *IpmOutProcessor) completeMC(ctx context.Context, insCode, userSerNumber int, fileID, flightName string, claimed int) error {
+	work, err := p.store.FindMcWorkByFileId(ctx, insCode, flightName, 9)
 	if err != nil {
 		return err
+	}
+	if len(work) == 0 {
+		if claimed > 0 {
+			// We claimed rows but cannot see them in flight: another run
+			// released them, or a concurrent sweep moved them. Say so loudly
+			// instead of returning nil and reporting success.
+			logOutsvc("completeMC: claimed rows are not in flight",
+				fmt.Errorf("%d row(s) claimed for %q but none found at gen_status=9 for this file", claimed, flightName))
+		}
+		return nil
 	}
 	now := time.Now()
 	for _, e := range work {
@@ -891,16 +913,18 @@ func (p *IpmOutProcessor) completeMC(ctx context.Context, insCode, userSerNumber
 	if err := p.store.UpdateMcWorkStatuses(ctx, work); err != nil {
 		return err
 	}
-	if err := p.store.CompletePosStatus(ctx, insCode); err != nil {
+	if err := p.store.CompletePosStatusForFile(ctx, insCode, fileID); err != nil {
 		return err
 	}
-	return p.moveWorkToData(ctx, insCode)
+	return p.moveWorkToData(ctx, insCode, work)
 }
 
-func (p *IpmOutProcessor) moveWorkToData(ctx context.Context, insCode int) error {
-	work, err := p.store.FindMcWorkByStatus(ctx, insCode, 4)
-	if err != nil {
-		return err
+// moveWorkToData archives the given rows into MC_ACQ_TXN_DATA and deletes
+// exactly those. It previously re-queried "every row at gen_status 4" and then
+// deleted that set, so a run could delete rows belonging to a different file.
+func (p *IpmOutProcessor) moveWorkToData(ctx context.Context, insCode int, work []*McAcqTxnWorkEntity) error {
+	if len(work) == 0 {
+		return nil
 	}
 	now := time.Now()
 	data := make([]*McAcqTxnDataEntity, 0, len(work))

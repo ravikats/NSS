@@ -61,6 +61,17 @@ func envInt(key string, def int) int {
 	return def
 }
 
+// envDur reads a duration in seconds, so the env file stays consistent with
+// the other integer knobs. A malformed or non-positive value falls back to def.
+func envDurSeconds(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return def
+}
+
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	slog.SetDefault(log)
@@ -111,6 +122,10 @@ func main() {
 		VersionNumber:      env("VERSION_NUMBER", ""),
 		UnionPayVersionTag: env("UNIONPAY_VERSION_TAG", "TEST"),
 		Region:             env("REGION", ""),
+		// Stale in-flight (gen_status=9) MC work rows are returned to 3 after
+		// this long, so a run that died mid-generation self-heals. 0 disables.
+		ReapStaleWorkAge: envDurSeconds("REAP_STALE_WORK_AGE_SECONDS", 10*time.Minute),
+		ReapInterval:     envDurSeconds("REAP_INTERVAL_SECONDS", time.Minute),
 		// Report-only by default: see OutgoingConfig.IPMValidationStrict.
 		IPMValidationStrict: env("IPM_VALIDATION_STRICT", "") == "true" || env("IPM_VALIDATION_STRICT", "") == "1",
 		IPMReportsDir:       env("IPM_REPORTS_DIR", ""),
@@ -136,6 +151,10 @@ func main() {
 
 	store := outsvc.NewOracleStore(db)
 	svc := outsvc.NewOutgoingService(cfg, store, crypto)
+	// Self-healing sweep for work rows stranded at gen_status=9 by a run that
+	// died between claim and release. Without it those rows are invisible to
+	// getTxnCount (which only counts 3) and are never retried.
+	svc.StartReaper(context.Background())
 	ctl := outsvc.NewOutgoingController(svc)
 
 	mux := http.NewServeMux()

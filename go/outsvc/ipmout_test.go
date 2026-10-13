@@ -266,6 +266,7 @@ type fakeStore struct {
 	report             []*OutgoingReportDataWorkEntity
 	data               []*McAcqTxnDataEntity
 	posStatusCompleted bool
+	posCompletedFileId string
 	failedFileId       string
 }
 
@@ -331,6 +332,24 @@ func (f *fakeStore) CompletePosStatus(ctx context.Context, ins int) error {
 	return nil
 }
 
+// FindMcWorkByFileId is the file-scoped selector generation now uses; it must
+// mirror the claim, which stamps the file name.
+func (f *fakeStore) FindMcWorkByFileId(ctx context.Context, ins int, fileId string, status int) ([]*McAcqTxnWorkEntity, error) {
+	var out []*McAcqTxnWorkEntity
+	for _, w := range f.work {
+		if w.FileID == fileId && w.GeneralStatus == status {
+			out = append(out, w)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) CompletePosStatusForFile(ctx context.Context, ins int, fileId string) error {
+	f.posStatusCompleted = true
+	f.posCompletedFileId = fileId
+	return nil
+}
+
 func (f *fakeStore) InsertMcData(ctx context.Context, ents []*McAcqTxnDataEntity) error {
 	f.data = ents
 	return nil
@@ -386,7 +405,7 @@ func TestIpmProEndToEnd(t *testing.T) {
 		t.Errorf("summary fileId = %q, want %q", st.summaries[0].FileId, fileID)
 	}
 	if !st.posStatusCompleted {
-		t.Error("CompletePosStatus not called")
+		t.Error("CompletePosStatusForFile not called")
 	}
 	if len(st.data) != 1 {
 		t.Fatalf("moved data rows = %d, want 1", len(st.data))
