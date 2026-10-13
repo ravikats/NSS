@@ -59,12 +59,12 @@ File Type (2) + Clearing Cycle (1) + Participant ID (9) + Julian Date (5) + Sequ
 | Date Time Local Transaction | nDtTmLcTxn | `local_date + local_time` | MMDDhhmmss | |
 | Primary Account Number | nPAN | `pan` | N..19 | Full PAN required |
 | Retrieval Reference Number | nRRN | `rrn` | N12 | Unique per batch |
-| Acquirer Institution Code | nAcqInstCd | `acquier_id` | N9 | |
+| Acquirer Institution Code | nAcqInstCd | `acquirer_id` | N9 | |
 | Approval Code | nApprvlCd | `auth_code` | AN6 | |
 | Card Acceptor Terminal ID | nCrdAcptTrmId | `terminal_id` | AN8 | |
 | Amount Transaction | nAmtTxn | `amount` | N12 | In fils (smallest unit) |
 | Currency Code Transaction | nCcyCdTxn | `currency_code` | N3 | 784 = AED |
-| Transaction Originator Inst Code | nTxnOrgInstCd | `acquier_id` | N9 | Same as nAcqInstCd |
+| Transaction Originator Inst Code | nTxnOrgInstCd | `acquirer_id` | N9 | Same as nAcqInstCd |
 | E-Commerce Indicator | nECIInd | `de60_json.ecomIndicator` | N2 | **Only for ECOM** |
 | Card Acceptor ID Code | nCrdAcpIDCd | `merchant_id` | AN15 | |
 | Card Acceptor Name | nCrdAcpNm | `card_acceptor_name` | AN25 | |
@@ -181,7 +181,7 @@ Sum of all transaction amounts in fils, formatted as N15 (15-digit zero-padded).
     "local_time": "150242",
     "local_date": "0714",
     "mcc": "5411",
-    "acquier_id": "784666661",
+    "acquirer_id": "784666661",
     "pos_entry_mode": "071",
     "rrn": "619511887502",
     "auth_code": "149984",

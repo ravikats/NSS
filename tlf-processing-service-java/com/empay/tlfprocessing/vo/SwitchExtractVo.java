@@ -126,10 +126,10 @@ public class SwitchExtractVo
     @JsonProperty("txn_fee_amount")
     @SerializedName("txn_fee_amount")
     private String txnFeeAmount;
-    @JsonProperty("acquier_id")
-    @SerializedName("acquier_id")
-    @NotNull(message = "accquier_id cannot be null")
-    @NotBlank(message = "The accquier_id cannot be blank")
+    @JsonProperty("acquirer_id")
+    @SerializedName("acquirer_id")
+    @NotNull(message = "acquirer_id cannot be null")
+    @NotBlank(message = "The acquirer_id cannot be blank")
     @Length(max = 11, message = "Length should be 11")
     private String acqInsIdCode;
     @JsonProperty("rrn")
@@ -640,7 +640,7 @@ public class SwitchExtractVo
         this.txnFeeAmount = txnFeeAmount;
     }
     
-    @JsonProperty("acquier_id")
+    @JsonProperty("acquirer_id")
     public void setAcqInsIdCode(final String acqInsIdCode) {
         this.acqInsIdCode = acqInsIdCode;
     }

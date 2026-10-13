@@ -9,12 +9,26 @@ fixes) and keep narrative output to a minimum unless the user asks for detail.
 version-controlled in the `switch` repo as of commit `c683dca`. Paths below are
 written relative to that tree; substitute the real path when working.
 
-Do NOT build from `IRF/go`. It is a stale git-tracked fork, last touched by
-commit `5bc2812` (2026-10-06), and is missing work the live tree has
-(`SetValidationHook` wiring, `validationsLoaded`, `scheduleFileProcessing`
-result logging, plus the `mercury`/`unionpay`/`amex` outsvc files). It was
-deleted from the working tree once already and restored in error; if you find
-it missing, do not `git checkout` it back. It is a duplicate, not a fallback.
+Do NOT build from `IRF/go`. Build from **`switch/NSS/irf-go`**.
+
+**CORRECTED 2026-10-13.** The paragraph this replaces was partly wrong and caused a
+real incident: it claimed `IRF/go` was missing the `mercury`/`unionpay`/`amex`
+outsvc files, when in fact it had all of them, and it did not mention that the
+tree *running in production* had been built from `IRF/go` for weeks. The root
+`AGENTS.md` said the opposite ("`IRF/go` is the live outgoing source"), so the two
+files contradicted each other and an agent nearly applied a fix to the wrong tree.
+
+`IRF/go` had genuinely diverged from `switch/NSS/irf-go` in **both** directions:
+`IRF/go` held fixes the switch tree lacked, and the switch tree held validation
+work (`validationsLoaded`, `loadValidations`, `SaveValidationResult`,
+ctx-aware `Validations`/`recordValidation`/`SetValidationHook`) that `IRF/go`
+lacked. Neither was a superset. As of 2026-10-13 `IRF/go` has been overwritten
+from the switch tree and the two are byte-identical (verify with
+`diff -rq --exclude=.git switch/NSS/irf-go IRF/go`), so the ambiguity is gone.
+
+Treat `IRF/go` as a read-only mirror of the `switch` repo's history. It is kept
+only so the IRF repo's git history is not silently lost -- **do not edit it
+independently**, or the two diverge again.
 
 `IRF1/go` was deleted 2026-10-11 as fully superseded — its crypto functions moved
 to the shared `cryptapi` package, `ProcessTxn` became `Stage1`+`Stage2`, and all
