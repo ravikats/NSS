@@ -122,11 +122,13 @@ func (s *OutgoingService) ProcessMercuryOutgoing(ctx context.Context, insCode, u
 		return "Outgoing Failed"
 	}
 
+	// Mercury file naming convention: "Documents." + member id + "." + yyyyMMdd
+	// (member id is configured via MERCURY_MEMBER_ID). Hoisted out of the batch
+	// loop because it does not depend on the loop variable, and the POS
+	// completion below is scoped to this file name.
+	fileName := "Documents." + s.cfg.MercuryMemberId + "." + now.Format("20060102")
 	for _, fileTxns := range splitMercuryTransactions(txnList) {
 		sequence := s.updateAndGetMercuryFileSequence(ctx, acqBin, now)
-		// Mercury file naming convention: "Documents." + member id + yyyyMMdd
-		// (member id is configured via MERCURY_MEMBER_ID).
-		fileName := "Documents." + s.cfg.MercuryMemberId + now.Format("20060102")
 		recapNumber := mercuryFormat3(sequence)
 		outgoingLogSerialNumber := s.inserOutFileLog(ctx, user, insCode, intCode, forCode)
 		if outgoingLogSerialNumber == 0 {
@@ -146,8 +148,18 @@ func (s *OutgoingService) ProcessMercuryOutgoing(ctx context.Context, insCode, u
 		if verr == nil && !report.OK() {
 			verr = fmt.Errorf("%s", strings.Join(report.Errors, "; "))
 		}
-		validation := newValidationResult("MERCURY", fileName, report, verr, s.now())
-		s.recordValidation(validation)
+		validation := &ValidationResult{
+			Network:     "MERCURY",
+			File:        fileName,
+			Batches:     1,
+			TxnCount:    len(fileTxns),
+			OK:          report.OK(),
+			Errors:      report.Errors,
+			Summary:     report.String(),
+			SumAmount:   workSumAmount(fileTxns),
+			ValidatedAt: s.now(),
+		}
+		s.recordValidation(ctx, validation)
 		if verr != nil {
 			logOutsvc("ValidateMercuryEIF", verr)
 			s.failMercuryFile(ctx, insCode, outgoingLogSerialNumber, fileName, fileTxns, user)
@@ -179,7 +191,7 @@ func (s *OutgoingService) ProcessMercuryOutgoing(ctx context.Context, insCode, u
 		// generateOutgoingSummaryPDF is not ported.
 	}
 
-	if err := s.store.CompleteMercuryPosStatus(ctx, insCode); err != nil {
+	if err := s.store.CompleteMercuryPosStatus(ctx, insCode, fileName); err != nil {
 		logOutsvc("CompleteMercuryPosStatus", err)
 		return "Failed"
 	}
@@ -224,6 +236,14 @@ func splitMercuryTransactions(txnList []*MercuryAcqTxnWorkEntity) [][]*MercuryAc
 		result = append(result, txnList[i:end])
 	}
 	return result
+}
+
+func workSumAmount(txns []*MercuryAcqTxnWorkEntity) float64 {
+	var sum float64
+	for _, t := range txns {
+		sum += t.TxnAmount
+	}
+	return sum
 }
 
 func (s *OutgoingService) updateAndGetMercuryFileSequence(ctx context.Context, acqBin *AcquirerBinsEntity, now time.Time) int {
@@ -323,6 +343,17 @@ func (s *OutgoingService) moveMercuryWorkToData(ctx context.Context, insCode, us
 		d := *we
 		d.LastUpdated = now
 		dataEntities = append(dataEntities, &d)
+	}
+	// MERCURY_ACQ_TXN_DATA keeps MAT_SER_NUMBER as its PK and reuses the work
+	// row's value, so a row archived by an earlier run that then failed before
+	// DeleteMercuryWork would collide here. Delete any existing archive rows
+	// first so the move is idempotent and re-running a file cannot wedge on
+	// PK_MERCURY_ACQ_TXN_DATA.
+	for _, we := range workEntities {
+		if err := s.store.DeleteMercuryDataBySerNumber(ctx, we.SerialNumber); err != nil {
+			logOutsvc("DeleteMercuryDataBySerNumber", err)
+			return
+		}
 	}
 	if err := s.store.InsertMercuryData(ctx, dataEntities); err != nil {
 		logOutsvc("InsertMercuryData", err)

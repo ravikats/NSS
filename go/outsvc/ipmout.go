@@ -27,7 +27,7 @@ type IpmOutProcessor struct {
 	// onValidation, when set, receives the compliance outcome of every
 	// generated IPM file so the owning service can publish it (the inquiry UI
 	// reads it via GET /outgoing/v1/validations).
-	onValidation func(*ValidationResult)
+	onValidation func(context.Context, *ValidationResult)
 
 	// strict makes a validation failure abort generation instead of only
 	// being reported.
@@ -42,7 +42,7 @@ func (p *IpmOutProcessor) SetStrict(v bool) { p.strict = v }
 
 // SetValidationHook installs the callback invoked with each file's validation
 // outcome.
-func (p *IpmOutProcessor) SetValidationHook(fn func(*ValidationResult)) {
+func (p *IpmOutProcessor) SetValidationHook(fn func(context.Context, *ValidationResult)) {
 	p.onValidation = fn
 }
 
@@ -203,8 +203,7 @@ func (p *IpmOutProcessor) IpmPro(ctx context.Context, fileName, processorId stri
 	recCnt := 0
 	var amount int64
 	var fileID string
-	// claimed is how many work rows this run moved into flight (3 -> 9).
-	// completeMC compares it against what it can actually see, so a run whose
+
 	// rows vanished mid-flight reports loudly instead of silently succeeding.
 	claimed := 0
 
@@ -325,7 +324,7 @@ func (p *IpmOutProcessor) IpmPro(ctx context.Context, fileName, processorId stri
 	if fileType != "GCO" {
 		records, txns, verr := p.validateIPMFile(dir + fileName)
 		if p.onValidation != nil {
-			p.onValidation(p.ipmValidation(fileName, records, txns, verr))
+			p.onValidation(ctx, p.ipmValidation(fileName, records, txns, verr))
 		}
 		if verr != nil {
 			logOutsvc("ValidateIPMFile", verr)
@@ -669,6 +668,9 @@ func (p *IpmOutProcessor) createFooterMessage(logf io.Writer, out io.Writer, amo
 
 // callIpmOutWorkEntity marks MC work rows gen_status 9, materialises
 // VW_IPM_OUT_WORK into IPM_OUT_WORK for this file and writes the report data.
+// callIpmOutWorkEntity claims the ready work rows for one flight, stamping the
+// flight name into MCT_FILE_ID. It returns how many rows it claimed so the
+// release step can tell "nothing in flight" from "rows vanished mid-flight".
 func (p *IpmOutProcessor) callIpmOutWorkEntity(ctx context.Context, insCode int, fileName string, fromDate, toDate *time.Time) (int, error) {
 	var fetched []*McAcqTxnWorkEntity
 	var err error
@@ -880,6 +882,8 @@ func (p *IpmOutProcessor) buildAndSaveSummaries(ctx context.Context, insCode, in
 	return p.store.InsertSummaries(ctx, ents)
 }
 
+// completeMC marks work rows complete, updates POS transactions and moves
+// work -> data (Java's completePosStatus + moveWorkToData).
 // completeMC marks work rows complete, updates POS transactions and moves
 // work -> data (Java's completePosStatus + moveWorkToData).
 //

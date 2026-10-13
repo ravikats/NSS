@@ -3,9 +3,11 @@ package outsvc
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
 
 	go_ora "github.com/sijms/go-ora/v2"
@@ -33,23 +35,13 @@ type Store interface {
 	FindMcWorkBetween(ctx context.Context, ins, status int, from, to time.Time) ([]*McAcqTxnWorkEntity, error)
 	FindMcWorkLessThanEqual(ctx context.Context, ins, status int, to time.Time) ([]*McAcqTxnWorkEntity, error)
 	FindMcWorkByStatus(ctx context.Context, ins, status int) ([]*McAcqTxnWorkEntity, error)
-	// FindMcWorkByFileId scopes work rows to one generation run. The claim
-	// (gen_status 3 -> 9) stamps MCT_FILE_ID with the file NAME, so every
-	// subsequent step must select by that same value -- not by status alone.
-	// Selecting by status alone sweeps rows belonging to a concurrent run.
-	FindMcWorkByFileId(ctx context.Context, ins int, fileId string, status int) ([]*McAcqTxnWorkEntity, error)
-	// ReapStaleMcWork returns in-flight (gen_status 9) rows that have not been
-	// touched since olderThan back to the ready state (3), clearing the file id
-	// so the next run re-claims them cleanly. This is the self-healing path for
-	// a run that died between claim and release: without it such rows are
-	// invisible to getTxnCount (which only counts 3) and are never retried.
-	ReapStaleMcWork(ctx context.Context, ins int, status int, olderThan, now time.Time) (int64, error)
+	// New functions accepting multiple statuses
+	FindMcWorkBetweenStatuses(ctx context.Context, ins int, statuses []int, from, to time.Time) ([]*McAcqTxnWorkEntity, error)
+	FindMcWorkLessThanEqualStatuses(ctx context.Context, ins int, statuses []int, to time.Time) ([]*McAcqTxnWorkEntity, error)
+	CountMcWorkBetweenStatuses(ctx context.Context, ins int, statuses []int, from, to time.Time) (int, error)
+	CountMcWorkLessThanEqualStatuses(ctx context.Context, ins int, statuses []int, to time.Time) (int, error)
 	UpdateMcWorkStatuses(ctx context.Context, ents []*McAcqTxnWorkEntity) error
 	FailMcWorkByFileId(ctx context.Context, ins int, fileId string) error
-	// CompletePosStatusForFile flips only the POS rows covered by one file.
-	// The unscoped variant must not be used by generation: it matches on
-	// "any work row at gen_status 4" and would complete unrelated schemes.
-	CompletePosStatusForFile(ctx context.Context, ins int, fileId string) error
 	DeleteMcWork(ctx context.Context, ents []*McAcqTxnWorkEntity) error
 
 	FindViewIpmOutWorkAll(ctx context.Context) ([]*ViewIpmOutWorkEntity, error)
@@ -84,7 +76,7 @@ type Store interface {
 	FindVisaDataByFileId(ctx context.Context, ins int, fileId string) ([]*VisaAcqTxnDataEntity, error)
 	DeleteVisaData(ctx context.Context, ents []*VisaAcqTxnDataEntity) error
 	InsertVisaWork(ctx context.Context, ents []*VisaAcqTxnWorkEntity) error
-	CompleteVisaPosStatus(ctx context.Context, ins int) error
+	CompleteVisaPosStatus(ctx context.Context, ins int, fileId string) error
 
 	CountJaywanWorkBetween(ctx context.Context, ins, status int, from, to time.Time) (int, error)
 	CountJaywanWorkLessThanEqual(ctx context.Context, ins, status int, to time.Time) (int, error)
@@ -104,7 +96,7 @@ type Store interface {
 	FindJaywanDataByFileId(ctx context.Context, ins int, fileId string) ([]*JaywanAcqTxnDataEntity, error)
 	DeleteJaywanData(ctx context.Context, ents []*JaywanAcqTxnDataEntity) error
 	InsertJaywanWork(ctx context.Context, ents []*JaywanAcqTxnWorkEntity) error
-	CompleteJaywanPosStatus(ctx context.Context, ins int) error
+	CompleteJaywanPosStatus(ctx context.Context, ins int, fileId string) error
 
 	CountMercuryWorkBetween(ctx context.Context, ins, status int, from, to time.Time) (int, error)
 	CountMercuryWorkLessThanEqual(ctx context.Context, ins, status int, to time.Time) (int, error)
@@ -114,10 +106,11 @@ type Store interface {
 	UpdateMercuryWorkStatuses(ctx context.Context, ents []*MercuryAcqTxnWorkEntity) error
 	DeleteMercuryWork(ctx context.Context, ents []*MercuryAcqTxnWorkEntity) error
 	InsertMercuryData(ctx context.Context, ents []*MercuryAcqTxnDataEntity) error
-	CompleteMercuryPosStatus(ctx context.Context, ins int) error
+	CompleteMercuryPosStatus(ctx context.Context, ins int, fileId string) error
 	FindMercuryDataByFileId(ctx context.Context, ins int, fileId string) ([]*MercuryAcqTxnDataEntity, error)
 	InsertMercuryWork(ctx context.Context, ents []*MercuryAcqTxnWorkEntity) error
 	DeleteMercuryData(ctx context.Context, ents []*MercuryAcqTxnDataEntity) error
+	DeleteMercuryDataBySerNumber(ctx context.Context, serNumber int64) error
 
 	CountUnionPayWorkBetween(ctx context.Context, ins, status int, from, to time.Time) (int, error)
 	CountUnionPayWorkLessThanEqual(ctx context.Context, ins, status int, to time.Time) (int, error)
@@ -128,7 +121,7 @@ type Store interface {
 	DeleteUnionPayWork(ctx context.Context, ents []*UnionPayAcqTxnWorkEntity) error
 	InsertUnionPayData(ctx context.Context, ents []*UnionPayAcqTxnDataEntity) error
 	InsertUnionPayWork(ctx context.Context, ents []*UnionPayAcqTxnWorkEntity) error
-	CompleteUnionPayPosStatus(ctx context.Context, ins int) error
+	CompleteUnionPayPosStatus(ctx context.Context, ins int, fileId string) error
 	FindUnionPayDataByFileId(ctx context.Context, ins int, fileId string) ([]*UnionPayAcqTxnDataEntity, error)
 	DeleteUnionPayData(ctx context.Context, ents []*UnionPayAcqTxnDataEntity) error
 
@@ -140,12 +133,27 @@ type Store interface {
 	UpdateAmexWorkStatuses(ctx context.Context, ents []*AmexAcqTxnWorkEntity) error
 	DeleteAmexWork(ctx context.Context, ents []*AmexAcqTxnWorkEntity) error
 	InsertAmexData(ctx context.Context, ents []*AmexAcqTxnDataEntity) error
-	CompleteAmexPosStatus(ctx context.Context, ins int) error
+	CompleteAmexPosStatus(ctx context.Context, ins int, fileId string) error
 
 	FindPosBySerNumbers(ctx context.Context, ser []int64) ([]*PosTransactionEntity, error)
 	UpdatePosStatuses(ctx context.Context, ents []*PosTransactionEntity) error
 
 	CompletePosStatus(ctx context.Context, ins int) error
+
+	// Validation persistence for GET /outgoing/v1/validations.
+	SaveValidationResult(ctx context.Context, fileName string, res *ValidationResult) error
+	LoadValidationResults(ctx context.Context, limit int) ([]*ValidationResult, error)
+
+	// FindMcWorkByFileId returns the in-flight work rows carrying one flight name.
+	// A run stamps its own name at claim time; releasing by flight name keeps two
+	// overlapping generations from completing each other's rows.
+	FindMcWorkByFileId(ctx context.Context, ins int, fileId string, status int) ([]*McAcqTxnWorkEntity, error)
+	// CompletePosStatusForFile completes only the POS rows covered by one file.
+	// It must not fall back to the unscoped variant.
+	CompletePosStatusForFile(ctx context.Context, ins int, fileId string) error
+	// ReapStaleMcWork returns stale in-flight rows to the ready state and clears
+	// the stale file id so they can be claimed again.
+	ReapStaleMcWork(ctx context.Context, ins int, status int, olderThan, now time.Time) (int64, error)
 }
 
 // oracleStore is the production Store backed by Oracle (go-ora v2 driver).
@@ -310,6 +318,71 @@ func bindRow(m map[string]any, dst any) {
 // silently produced a zero-record file.
 func oraTime(t time.Time) string {
 	return t.Format("2006-01-02 15:04:05")
+}
+
+// boolToYN converts a Go bool to the Oracle 'Y'/'N' convention used by the
+// OUT_FILE_LOG validation columns.
+func boolToYN(b bool) string {
+	if b {
+		return "Y"
+	}
+	return "N"
+}
+
+// jsonEncodeStrSlice is a minimal JSON array encoder for validation errors so
+// we do not depend on the full json package in every code path.
+func errorsJSON(errs []string) string {
+	if len(errs) == 0 {
+		return "[]"
+	}
+	var buf []byte
+	buf = append(buf, '[')
+	for i, e := range errs {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		b, _ := json.Marshal(e)
+		buf = append(buf, b...)
+	}
+	buf = append(buf, ']')
+	return string(buf)
+}
+
+// jsonDecodeStrSlice decodes a JSON string array.
+func jsonDecodeStrSlice(s string) ([]string, error) {
+	var out []string
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func intNull(v sql.NullInt64) int {
+	if !v.Valid {
+		return 0
+	}
+	return int(v.Int64)
+}
+
+func floatNull(v sql.NullFloat64) float64 {
+	if !v.Valid {
+		return 0
+	}
+	return v.Float64
+}
+
+func nullString(v sql.NullString) string {
+	if !v.Valid {
+		return ""
+	}
+	return v.String
+}
+
+func timeNull(v sql.NullTime) time.Time {
+	if !v.Valid {
+		return time.Time{}
+	}
+	return v.Time
 }
 
 // nullStr maps an empty string to NULL (Java null semantics), else the value.
@@ -602,8 +675,8 @@ func (s *oracleStore) CountMcWorkLessThanEqual(ctx context.Context, ins, status 
 func (s *oracleStore) FindMcWorkBetween(ctx context.Context, ins, status int, from, to time.Time) ([]*McAcqTxnWorkEntity, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT * FROM MC_ACQ_TXN_WORK
-		WHERE MCT_INS_CODE = :1 AND MCT_GEN_STATUS = :2 AND MCT_LOCAL_DATE_TIME BETWEEN TO_DATE(:3,'YYYY-MM-DD HH24:MI:SS') AND TO_DATE(:4,'YYYY-MM-DD HH24:MI:SS')`,
-		ins, status, oraTime(from), oraTime(to))
+		WHERE MCT_INS_CODE = :1 AND MCT_GEN_STATUS IN (3,7) AND MCT_LOCAL_DATE_TIME BETWEEN TO_DATE(:3,'YYYY-MM-DD HH24:MI:SS') AND TO_DATE(:4,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, oraTime(from), oraTime(to))
 	if err != nil {
 		return nil, err
 	}
@@ -614,8 +687,8 @@ func (s *oracleStore) FindMcWorkBetween(ctx context.Context, ins, status int, fr
 func (s *oracleStore) FindMcWorkLessThanEqual(ctx context.Context, ins, status int, to time.Time) ([]*McAcqTxnWorkEntity, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT * FROM MC_ACQ_TXN_WORK
-		WHERE MCT_INS_CODE = :1 AND MCT_GEN_STATUS = :2 AND MCT_LOCAL_DATE_TIME <= TO_DATE(:3,'YYYY-MM-DD HH24:MI:SS')`,
-		ins, status, oraTime(to))
+		WHERE MCT_INS_CODE = :1 AND MCT_GEN_STATUS IN (3,7) AND MCT_LOCAL_DATE_TIME <= TO_DATE(:3,'YYYY-MM-DD HH24:MI:SS')`,
+		ins, oraTime(to))
 	if err != nil {
 		return nil, err
 	}
@@ -625,7 +698,7 @@ func (s *oracleStore) FindMcWorkLessThanEqual(ctx context.Context, ins, status i
 
 func (s *oracleStore) FindMcWorkByStatus(ctx context.Context, ins, status int) ([]*McAcqTxnWorkEntity, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT * FROM MC_ACQ_TXN_WORK WHERE MCT_INS_CODE = :1 AND MCT_GEN_STATUS = :2`, ins, status)
+		SELECT * FROM MC_ACQ_TXN_WORK WHERE MCT_INS_CODE = :1 AND MCT_GEN_STATUS IN (3,7)`, ins)
 	if err != nil {
 		return nil, err
 	}
@@ -633,10 +706,24 @@ func (s *oracleStore) FindMcWorkByStatus(ctx context.Context, ins, status int) (
 	return bindMcWork(rows)
 }
 
-func (s *oracleStore) FindMcWorkByFileId(ctx context.Context, ins int, fileId string, status int) ([]*McAcqTxnWorkEntity, error) {
-	rows, err := s.db.QueryContext(ctx, `
+// FindMcWorkBetweenStatuses finds work rows with multiple statuses in a date range.
+func (s *oracleStore) FindMcWorkBetweenStatuses(ctx context.Context, ins int, statuses []int, from, to time.Time) ([]*McAcqTxnWorkEntity, error) {
+	if len(statuses) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(statuses))
+	args := make([]any, 0, 2+len(statuses)+2)
+	args = append(args, ins)
+	for i := range statuses {
+		placeholders[i] = fmt.Sprintf(":%d", i+2)
+		args = append(args, statuses[i])
+	}
+	args = append(args, oraTime(from), oraTime(to))
+	query := fmt.Sprintf(`
 		SELECT * FROM MC_ACQ_TXN_WORK
-		WHERE MCT_INS_CODE = :1 AND MCT_FILE_ID = :2 AND MCT_GEN_STATUS = :3`, ins, fileId, status)
+		WHERE MCT_INS_CODE = :1 AND MCT_GEN_STATUS IN (%s) AND MCT_LOCAL_DATE_TIME BETWEEN TO_DATE(:%d,'YYYY-MM-DD HH24:MI:SS') AND TO_DATE(:%d,'YYYY-MM-DD HH24:MI:SS')`,
+		strings.Join(placeholders, ","), len(statuses)+2, len(statuses)+3)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -644,39 +731,72 @@ func (s *oracleStore) FindMcWorkByFileId(ctx context.Context, ins int, fileId st
 	return bindMcWork(rows)
 }
 
-// ReapStaleMcWork is a safety net for runs that died between claiming rows
-// (gen_status 9) and releasing them.
-//
-// Timestamps are bound as time.Time, exactly as UpdateFileLog does for
-// OFL_LAST_UPDATED.
-//
-// The bind numbers below are in ORDER OF APPEARANCE in the statement, and that
-// is deliberate: this driver binds positionally, not by name. An earlier
-// version wrote the SET clause against :4 and passed the arguments as
-// (ins, status, olderThan, now), so every value landed one slot off -- the
-// driver fed a TIMESTAMP into MCT_GEN_STATUS and failed with ORA-00932.
-//
-// SYSDATE is deliberately NOT used: MCT_LAST_UPDATED is written by the staging
-// side in application time, and on this deployment the DB clock runs ~4.8h
-// behind it, so stamping SYSDATE would corrupt the column for later
-// comparisons and immediately re-trip this sweep.
-//
-// now is stamped onto each reaped row so a row that is re-claimed and stranded
-// again cannot be reaped out from under the run that just claimed it.
-func (s *oracleStore) ReapStaleMcWork(ctx context.Context, ins int, status int, olderThan, now time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `
-		UPDATE MC_ACQ_TXN_WORK
-		   SET MCT_GEN_STATUS = :1,
-		       MCT_FILE_ID = NULL,
-		       MCT_LAST_UPDATED = :2
-		 WHERE MCT_INS_CODE = :3
-		   AND MCT_GEN_STATUS = :4
-		   AND MCT_LAST_UPDATED < :5`,
-		3, now, ins, status, olderThan)
-	if err != nil {
-		return 0, err
+// FindMcWorkLessThanEqualStatuses finds work rows with multiple statuses up to a date.
+func (s *oracleStore) FindMcWorkLessThanEqualStatuses(ctx context.Context, ins int, statuses []int, to time.Time) ([]*McAcqTxnWorkEntity, error) {
+	if len(statuses) == 0 {
+		return nil, nil
 	}
-	n, err := res.RowsAffected()
+	placeholders := make([]string, len(statuses))
+	args := make([]any, 0, 1+len(statuses)+1)
+	args = append(args, ins)
+	for i := range statuses {
+		placeholders[i] = fmt.Sprintf(":%d", i+2)
+		args = append(args, statuses[i])
+	}
+	args = append(args, oraTime(to))
+	query := fmt.Sprintf(`
+		SELECT * FROM MC_ACQ_TXN_WORK
+		WHERE MCT_INS_CODE = :1 AND MCT_GEN_STATUS IN (%s) AND MCT_LOCAL_DATE_TIME <= TO_DATE(:%d,'YYYY-MM-DD HH24:MI:SS')`,
+		strings.Join(placeholders, ","), len(statuses)+2)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return bindMcWork(rows)
+}
+
+// CountMcWorkBetweenStatuses counts work rows with multiple statuses in a date range.
+func (s *oracleStore) CountMcWorkBetweenStatuses(ctx context.Context, ins int, statuses []int, from, to time.Time) (int, error) {
+	if len(statuses) == 0 {
+		return 0, nil
+	}
+	placeholders := make([]string, len(statuses))
+	args := make([]any, 0, 2+len(statuses))
+	args = append(args, ins)
+	for i := range statuses {
+		placeholders[i] = fmt.Sprintf(":%d", i+2)
+		args = append(args, statuses[i])
+	}
+	args = append(args, oraTime(from), oraTime(to))
+	query := fmt.Sprintf(`
+		SELECT COUNT(*) FROM MC_ACQ_TXN_WORK
+		WHERE MCT_INS_CODE = :1 AND MCT_GEN_STATUS IN (%s) AND MCT_LOCAL_DATE_TIME BETWEEN TO_DATE(:%d,'YYYY-MM-DD HH24:MI:SS') AND TO_DATE(:%d,'YYYY-MM-DD HH24:MI:SS')`,
+		strings.Join(placeholders, ","), len(statuses)+2, len(statuses)+3)
+	var n int
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&n)
+	return n, err
+}
+
+// CountMcWorkLessThanEqualStatuses counts work rows with multiple statuses up to a date.
+func (s *oracleStore) CountMcWorkLessThanEqualStatuses(ctx context.Context, ins int, statuses []int, to time.Time) (int, error) {
+	if len(statuses) == 0 {
+		return 0, nil
+	}
+	placeholders := make([]string, len(statuses))
+	args := make([]any, 0, 1+len(statuses)+1)
+	args = append(args, ins)
+	for i := range statuses {
+		placeholders[i] = fmt.Sprintf(":%d", i+2)
+		args = append(args, statuses[i])
+	}
+	args = append(args, oraTime(to))
+	query := fmt.Sprintf(`
+		SELECT COUNT(*) FROM MC_ACQ_TXN_WORK
+		WHERE MCT_INS_CODE = :1 AND MCT_GEN_STATUS IN (%s) AND MCT_LOCAL_DATE_TIME <= TO_DATE(:%d,'YYYY-MM-DD HH24:MI:SS')`,
+		strings.Join(placeholders, ","), len(statuses)+2)
+	var n int
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&n)
 	return n, err
 }
 
@@ -1113,6 +1233,20 @@ func (s *oracleStore) CompletePosStatus(ctx context.Context, ins int) error {
 	return err
 }
 
+// FindMcWorkByFileId returns the in-flight work rows carrying one flight name.
+// A run stamps its own name at claim time, so releasing by flight name keeps two
+// overlapping generations from completing each other's rows.
+func (s *oracleStore) FindMcWorkByFileId(ctx context.Context, ins int, fileId string, status int) ([]*McAcqTxnWorkEntity, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT * FROM MC_ACQ_TXN_WORK
+		WHERE MCT_INS_CODE = :1 AND MCT_FILE_ID = :2 AND MCT_GEN_STATUS = :3`, ins, fileId, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return bindMcWork(rows)
+}
+
 // CompletePosStatusForFile is the file-scoped form used by generation. It must
 // not fall back to the unscoped variant: that one completes every MCI/MDS POS
 // row whose reference appears in ANY work row at gen_status 4, so two
@@ -1130,4 +1264,95 @@ func (s *oracleStore) CompletePosStatusForFile(ctx context.Context, ins int, fil
 		AND pos.PTR_GEN_STATUS = 4
 		AND pos.PTR_INS_CODE = :1`, ins, fileId)
 	return err
+}
+
+// ReapStaleMcWork returns stale in-flight rows to the ready state and clears the
+// stale file id so a re-claim cannot collide with the run that stranded them.
+//
+// SYSDATE is deliberately NOT used: MCT_LAST_UPDATED is written in application
+// time and on this deployment the DB clock runs ~4.8h behind it, so stamping
+// SYSDATE would corrupt the column and immediately re-trip this sweep.
+//
+// now is stamped onto each reaped row so a row that is re-claimed and stranded
+// again cannot be reaped out from under the run that just claimed it.
+func (s *oracleStore) ReapStaleMcWork(ctx context.Context, ins int, status int, olderThan, now time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE MC_ACQ_TXN_WORK
+		   SET MCT_GEN_STATUS = :1,
+		       MCT_FILE_ID = NULL,
+		       MCT_LAST_UPDATED = :2
+		 WHERE MCT_INS_CODE = :3
+		   AND MCT_GEN_STATUS = :4
+		   AND MCT_LAST_UPDATED < :5`,
+		3, now, ins, status, olderThan)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return n, err
+}
+
+// SaveValidationResult persists a validation result into OUT_FILE_LOG.
+func (s *oracleStore) SaveValidationResult(ctx context.Context, fileName string, res *ValidationResult) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE OUT_FILE_LOG
+		   SET OFL_VALIDATION_STATUS = :1,
+		       OFL_VALIDATION_ERRORS   = :2,
+		       OFL_VALIDATION_SUMMARY  = :3,
+		       OFL_VALIDATION_RECORDS  = :4,
+		       OFL_VALIDATION_TXN_COUNT= :5,
+		       OFL_VALIDATION_SUM_AMOUNT = :6,
+		       OFL_VALIDATED_AT        = :7
+		WHERE OFL_FILE_NAME = :8`, boolToYN(res.OK), errorsJSON(res.Errors), res.Summary, res.Records, res.TxnCount, res.SumAmount, res.ValidatedAt, fileName)
+	return err
+}
+
+// LoadValidationResults loads persisted validation results, newest first.
+func (s *oracleStore) LoadValidationResults(ctx context.Context, limit int) ([]*ValidationResult, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT OFL_FILE_NAME,
+		       OFL_VALIDATION_STATUS,
+		       OFL_VALIDATION_ERRORS,
+		       OFL_VALIDATION_SUMMARY,
+		       OFL_VALIDATION_RECORDS,
+		       OFL_VALIDATION_TXN_COUNT,
+		       OFL_VALIDATION_SUM_AMOUNT,
+		       OFL_VALIDATED_AT
+		FROM OUT_FILE_LOG
+		WHERE OFL_VALIDATION_STATUS IS NOT NULL
+		ORDER BY OFL_VALIDATED_AT DESC NULLS LAST
+		FETCH FIRST :1 ROWS ONLY`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*ValidationResult
+	for rows.Next() {
+		var fileName string
+		var status, errorsJSON, summary sql.NullString
+		var records, txnCount sql.NullInt64
+		var sumAmount sql.NullFloat64
+		var validatedAt sql.NullTime
+		if err := rows.Scan(&fileName, &status, &errorsJSON, &summary, &records, &txnCount, &sumAmount, &validatedAt); err != nil {
+			return nil, err
+		}
+		var errs []string
+		if errorsJSON.Valid && errorsJSON.String != "" {
+			errs, _ = jsonDecodeStrSlice(errorsJSON.String)
+		}
+		out = append(out, &ValidationResult{
+			Network:     "",
+			File:        fileName,
+			OK:          status.Valid && status.String == "OK",
+			Batches:     0,
+			Records:     intNull(records),
+			TxnCount:    intNull(txnCount),
+			SumAmount:   floatNull(sumAmount),
+			Errors:      errs,
+			Summary:     nullString(summary),
+			ValidatedAt: timeNull(validatedAt),
+		})
+	}
+	return out, rows.Err()
 }

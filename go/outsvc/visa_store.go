@@ -314,16 +314,17 @@ func (s *oracleStore) InsertVisaWork(ctx context.Context, ents []*VisaAcqTxnWork
 
 // CompleteVisaPosStatus mirrors PosTransactionRepo.completeVISAPosStatus. The
 // Java PosTransactionEntity.rrn property maps to column PTR_RET_REF_NUMBER.
-func (s *oracleStore) CompleteVisaPosStatus(ctx context.Context, ins int) error {
+func (s *oracleStore) CompleteVisaPosStatus(ctx context.Context, ins int, fileId string) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE POS_TRANSACTIONS pos SET
 		  pos.PTR_GEN_STATUS = 6,
 		  pos.PTR_OUT_STATUS = 'Completed'
 		WHERE pos.PTR_RET_REF_NUMBER IN (
-		  SELECT vis.VTD_RET_REF_NUMBER FROM VISA_ACQ_TXN_WORK vis WHERE vis.VTD_GEN_STATUS = 4
+		  SELECT vis.VTD_RET_REF_NUMBER FROM VISA_ACQ_TXN_WORK vis
+		  WHERE vis.VTD_GEN_STATUS = 4 AND vis.VTD_FILE_ID = :2
 		)
 		AND pos.PTR_NETWORK = 'VISA'
 		AND pos.PTR_GEN_STATUS = 4
-		AND pos.PTR_INS_CODE = :1`, ins)
+		AND pos.PTR_INS_CODE = :1`, ins, fileId)
 	return err
 }

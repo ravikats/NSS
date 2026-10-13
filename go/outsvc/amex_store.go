@@ -158,15 +158,16 @@ func (s *oracleStore) InsertAmexData(ctx context.Context, ents []*AmexAcqTxnData
 // The work-table subquery (ATD_GEN_STATUS=4) scopes completion to AMEX
 // transactions; PTR_NETWORK is empty for AMEX in POS_TRANSACTIONS, so it is
 // not filtered (matching CompleteUnionPayPosStatus).
-func (s *oracleStore) CompleteAmexPosStatus(ctx context.Context, ins int) error {
+func (s *oracleStore) CompleteAmexPosStatus(ctx context.Context, ins int, fileId string) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE POS_TRANSACTIONS pos SET
 		  pos.PTR_GEN_STATUS = 6,
 		  pos.PTR_OUT_STATUS = 'Completed'
 		WHERE pos.PTR_RET_REF_NUMBER IN (
-		  SELECT atd.ATD_RET_REF_NUMBER FROM AMEX_ACQ_TXN_WORK atd WHERE atd.ATD_GEN_STATUS = 4
+		  SELECT atd.ATD_RET_REF_NUMBER FROM AMEX_ACQ_TXN_WORK atd
+		  WHERE atd.ATD_GEN_STATUS = 4 AND atd.ATD_FILE_ID = :2
 		)
 		AND pos.PTR_GEN_STATUS = 4
-		AND pos.PTR_INS_CODE = :1`, ins)
+		AND pos.PTR_INS_CODE = :1`, ins, fileId)
 	return err
 }

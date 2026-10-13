@@ -212,17 +212,27 @@ func (s *oracleStore) DeleteMercuryData(ctx context.Context, ents []*MercuryAcqT
 	return nil
 }
 
+// DeleteMercuryDataBySerNumber clears a single already-archived row by its
+// primary key. moveMercuryWorkToData calls this before re-inserting so that
+// re-archiving the same work row (a re-run of a file whose archive step failed
+// part-way) does not violate PK_MERCURY_ACQ_TXN_DATA.
+func (s *oracleStore) DeleteMercuryDataBySerNumber(ctx context.Context, serNumber int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM MERCURY_ACQ_TXN_DATA WHERE MAT_SER_NUMBER = :1`, serNumber)
+	return err
+}
+
 // CompleteMercuryPosStatus mirrors PosTransactionRepo.completeMercuryPosStatus.
-func (s *oracleStore) CompleteMercuryPosStatus(ctx context.Context, ins int) error {
+func (s *oracleStore) CompleteMercuryPosStatus(ctx context.Context, ins int, fileId string) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE POS_TRANSACTIONS pos SET
 		  pos.PTR_GEN_STATUS = 6,
 		  pos.PTR_OUT_STATUS = 'Completed'
 		WHERE pos.PTR_RET_REF_NUMBER IN (
-		  SELECT mat.MAT_RET_REF_NUMBER FROM MERCURY_ACQ_TXN_WORK mat WHERE mat.MAT_GEN_STATUS = 4
+		  SELECT mat.MAT_RET_REF_NUMBER FROM MERCURY_ACQ_TXN_WORK mat
+		  WHERE mat.MAT_GEN_STATUS = 4 AND mat.MAT_FILE_ID = :2
 		)
 		AND pos.PTR_NETWORK IN ('MERCURY')
 		AND pos.PTR_GEN_STATUS = 4
-		AND pos.PTR_INS_CODE = :1`, ins)
+		AND pos.PTR_INS_CODE = :1`, ins, fileId)
 	return err
 }

@@ -15,19 +15,37 @@ import (
 // method.
 type mercuryFakeStore struct {
 	Store
-	work       []*MercuryAcqTxnWorkEntity
-	data       []*MercuryAcqTxnDataEntity
-	fileLogs   []*OutGoingFileProcessingEntity
-	nextSerial int64
-	acqBin     *AcquirerBinsEntity
-	interfaces *InterfacesEntity
-	format     *FileFormatsEntity
-	summaries  []*OutgoingSummaryEntity
-	posDone    bool
-	statusUpd  map[int64]int
-	fileIDUpd  map[int64]string
-	userUpd    map[int64]int
-	posUpdated []*PosTransactionEntity
+	work          []*MercuryAcqTxnWorkEntity
+	data          []*MercuryAcqTxnDataEntity
+	fileLogs      []*OutGoingFileProcessingEntity
+	nextSerial    int64
+	acqBin        *AcquirerBinsEntity
+	interfaces    *InterfacesEntity
+	format        *FileFormatsEntity
+	summaries     []*OutgoingSummaryEntity
+	posDone       bool
+	statusUpd     map[int64]int
+	fileIDUpd     map[int64]string
+	userUpd       map[int64]int
+	posUpdated    []*PosTransactionEntity
+	validationLog []*ValidationResult
+}
+
+func (f *mercuryFakeStore) SaveValidationResult(ctx context.Context, fileName string, res *ValidationResult) error {
+	v := *res
+	v.File = fileName
+	f.validationLog = append([]*ValidationResult{&v}, f.validationLog...)
+	return nil
+}
+
+func (f *mercuryFakeStore) LoadValidationResults(ctx context.Context, limit int) ([]*ValidationResult, error) {
+	out := f.validationLog
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	cp := make([]*ValidationResult, len(out))
+	copy(cp, out)
+	return cp, nil
 }
 
 func (f *mercuryFakeStore) FindFileFormatBySystemCodeAndType(ctx context.Context, sysCode int, typ string) (*FileFormatsEntity, error) {
@@ -132,7 +150,7 @@ func (f *mercuryFakeStore) InsertMercuryData(ctx context.Context, ents []*Mercur
 	return nil
 }
 
-func (f *mercuryFakeStore) CompleteMercuryPosStatus(ctx context.Context, ins int) error {
+func (f *mercuryFakeStore) CompleteMercuryPosStatus(ctx context.Context, ins int, fileId string) error {
 	f.posDone = true
 	return nil
 }
@@ -239,7 +257,7 @@ func TestMercuryFileBuilderMatchesJava(t *testing.T) {
 		t.Fatalf("ProcessMercuryOutgoing = %q, want Success", got)
 	}
 
-	outPath := filepath.Join(dir, "Documents.2401392320260803")
+	outPath := filepath.Join(dir, "Documents.24013923.20260803")
 	gotBytes, err := os.ReadFile(outPath)
 	if err != nil {
 		t.Fatalf("output file missing: %v", err)
@@ -346,8 +364,8 @@ func TestMercuryFileBuilderMatchesJava(t *testing.T) {
 		sm.SurchargeAmount != 1.00 || sm.NetAmount != 1062.00 || sm.FunctionCode != "1" {
 		t.Errorf("summary = %+v", sm)
 	}
-	if sm.FileId != "Documents.2401392320260803" {
-		t.Errorf("summary file id = %q, want Documents.2401392320260803", sm.FileId)
+	if sm.FileId != "Documents.24013923.20260803" {
+		t.Errorf("summary file id = %q, want Documents.24013923.20260803", sm.FileId)
 	}
 
 	var fileLog *OutGoingFileProcessingEntity
@@ -362,7 +380,7 @@ func TestMercuryFileBuilderMatchesJava(t *testing.T) {
 	if fileLog.GeneratedStatus != 4 {
 		t.Errorf("file log status = %d, want 4", fileLog.GeneratedStatus)
 	}
-	if fileLog.FileId == nil || *fileLog.FileId != "Documents.2401392320260803" {
+	if fileLog.FileId == nil || *fileLog.FileId != "Documents.24013923.20260803" {
 		t.Errorf("file log file id = %v", fileLog.FileId)
 	}
 }
@@ -400,7 +418,7 @@ func TestMercuryBatchFlipAt60(t *testing.T) {
 		t.Fatalf("ProcessMercuryOutgoing = %q, want Success", got)
 	}
 
-	gotBytes, err := os.ReadFile(filepath.Join(dir, "Documents.2401392320260803"))
+	gotBytes, err := os.ReadFile(filepath.Join(dir, "Documents.24013923.20260803"))
 	if err != nil {
 		t.Fatalf("output file missing: %v", err)
 	}

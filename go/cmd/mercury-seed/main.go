@@ -54,7 +54,8 @@ VALUES (
 func main() {
 	dsn := os.Getenv("ORACLE_DSN")
 	if dsn == "" {
-		dsn = "oracle://NETWORK_SETTLEMENT_UAT:J6erQ%24o6E24@localhost:1521/FREEPDB1"
+		fmt.Fprintln(os.Stderr, "ORACLE_DSN is required (oracle://user:pass@host:1521/service)")
+		os.Exit(1)
 	}
 	db, err := sql.Open("oracle", dsn)
 	if err != nil {

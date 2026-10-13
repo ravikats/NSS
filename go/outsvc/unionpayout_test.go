@@ -13,16 +13,34 @@ import (
 // ProcessUnionPayOutgoing success/failure paths.
 type unionpayFakeStore struct {
 	Store
-	work         []*UnionPayAcqTxnWorkEntity
-	data         []*UnionPayAcqTxnDataEntity
-	fileLogs     []*OutGoingFileProcessingEntity
-	nextSerial   int64
-	acqBin       *AcquirerBinsEntity
-	interfaces   *InterfacesEntity
-	format       *FileFormatsEntity
-	businessDate *BusinessDateEntity
-	summaries    []*OutgoingSummaryEntity
-	posDone      bool
+	work          []*UnionPayAcqTxnWorkEntity
+	data          []*UnionPayAcqTxnDataEntity
+	fileLogs      []*OutGoingFileProcessingEntity
+	nextSerial    int64
+	acqBin        *AcquirerBinsEntity
+	interfaces    *InterfacesEntity
+	format        *FileFormatsEntity
+	businessDate  *BusinessDateEntity
+	summaries     []*OutgoingSummaryEntity
+	posDone       bool
+	validationLog []*ValidationResult
+}
+
+func (f *unionpayFakeStore) SaveValidationResult(ctx context.Context, fileName string, res *ValidationResult) error {
+	v := *res
+	v.File = fileName
+	f.validationLog = append([]*ValidationResult{&v}, f.validationLog...)
+	return nil
+}
+
+func (f *unionpayFakeStore) LoadValidationResults(ctx context.Context, limit int) ([]*ValidationResult, error) {
+	out := f.validationLog
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	cp := make([]*ValidationResult, len(out))
+	copy(cp, out)
+	return cp, nil
 }
 
 func (f *unionpayFakeStore) FindFileFormatBySystemCodeAndType(ctx context.Context, sysCode int, typ string) (*FileFormatsEntity, error) {
@@ -137,7 +155,7 @@ func (f *unionpayFakeStore) DeleteUnionPayWork(ctx context.Context, ents []*Unio
 	return nil
 }
 
-func (f *unionpayFakeStore) CompleteUnionPayPosStatus(ctx context.Context, ins int) error {
+func (f *unionpayFakeStore) CompleteUnionPayPosStatus(ctx context.Context, ins int, fileId string) error {
 	f.posDone = true
 	return nil
 }

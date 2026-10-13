@@ -158,7 +158,7 @@ func (s *OutgoingService) ProcessVisaOutgoing(ctx context.Context, insCode, user
 		s.updateOutFilelog(ctx, insCode, outgoingLogSerialNumber, fileName, fileId)
 		s.insertVisaIntoOutgoingSummary(ctx, user, insCode, intCode, fileName, outgoingLogSerialNumber)
 		s.updateVisaAcqWork(ctx, insCode, user, intCode, *fileId, 9, fromDate, toDate)
-		if err := s.store.CompleteVisaPosStatus(ctx, insCode); err != nil {
+		if err := s.store.CompleteVisaPosStatus(ctx, insCode, *fileId); err != nil {
 			logOutsvc("CompleteVisaPosStatus", err)
 		}
 		s.moveVisaWorkToData(ctx, insCode, 4)

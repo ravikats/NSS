@@ -1,6 +1,7 @@
 package outsvc
 
 import (
+	"context"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -174,6 +175,7 @@ func mustBuild(t *testing.T, batch time.Time) []byte {
 // relies on: the report is returned, published for the inquiry UI, and written
 // to disk. A valid file reports OK; a corrupted one reports its issues.
 func TestValidateUnionPayFileReportsAndRecords(t *testing.T) {
+	ctx := context.Background()
 	batch := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
 	s := &OutgoingService{cfg: OutgoingConfig{ReconOutDir: dir}}
@@ -184,11 +186,11 @@ func TestValidateUnionPayFileReportsAndRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep := s.validateUnionPayFile(name, "IRF")
+	rep := s.validateUnionPayFile(ctx, name, "IRF")
 	if rep == nil || !rep.OK() {
 		t.Fatalf("expected a clean report, got %v", rep)
 	}
-	vals := s.Validations()
+	vals := s.Validations(context.Background())
 	if len(vals) != 1 || vals[0].Network != "UNIONPAY" || !vals[0].OK {
 		t.Fatalf("validation not published for the UI: %+v", vals)
 	}
@@ -201,7 +203,7 @@ func TestValidateUnionPayFileReportsAndRecords(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(bad), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	rep = s.validateUnionPayFile(name, "IRF")
+	rep = s.validateUnionPayFile(ctx, name, "IRF")
 	if rep == nil || rep.OK() {
 		t.Fatalf("corrupted file should fail validation, got %v", rep)
 	}
@@ -214,13 +216,13 @@ func TestValidateUnionPayFileReportsAndRecords(t *testing.T) {
 	if !found {
 		t.Errorf("expected the org-code issue, got %v", rep.Issues)
 	}
-	if len(s.Validations()) != 2 {
-		t.Errorf("expected both outcomes published, got %d", len(s.Validations()))
+	if len(s.Validations(context.Background())) != 2 {
+		t.Errorf("expected both outcomes published, got %d", len(s.Validations(context.Background())))
 	}
 
 	// A missing file must return nil so it is not double-reported as a
 	// validation failure alongside the generation failure.
-	if got := s.validateUnionPayFile("OFC-does-not-exist", "IRF"); got != nil {
+	if got := s.validateUnionPayFile(ctx, "OFC-does-not-exist", "IRF"); got != nil {
 		t.Errorf("missing file should yield nil, got %v", got)
 	}
 }

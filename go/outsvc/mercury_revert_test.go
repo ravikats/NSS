@@ -36,6 +36,17 @@ func (f *mercuryFakeStore) InsertMercuryWork(ctx context.Context, ents []*Mercur
 	return nil
 }
 
+func (f *mercuryFakeStore) DeleteMercuryDataBySerNumber(ctx context.Context, serNumber int64) error {
+	kept := f.data[:0]
+	for _, e := range f.data {
+		if e.SerialNumber != serNumber {
+			kept = append(kept, e)
+		}
+	}
+	f.data = kept
+	return nil
+}
+
 func (f *mercuryFakeStore) DeleteMercuryData(ctx context.Context, ents []*MercuryAcqTxnDataEntity) error {
 	del := make(map[int64]bool, len(ents))
 	for _, e := range ents {
@@ -87,7 +98,7 @@ func mercuryDataRow(ser int64, fileID string, txnRef int64) *MercuryAcqTxnDataEn
 }
 
 func TestRevertLastOutgoingMercuryRequeuesRows(t *testing.T) {
-	fileID := "Documents.2401392320260803"
+	fileID := "Documents.24013923.20260803"
 	st := newMercuryFakeStore()
 	st.fileLogs = []*OutGoingFileProcessingEntity{{
 		InstitutionCode: 1,

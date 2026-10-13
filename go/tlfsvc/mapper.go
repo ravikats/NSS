@@ -114,9 +114,6 @@ func ParseAmount(s string) float64 {
 	return v
 }
 
-// UpdateTxnDatetime mirrors TxnProcessingService.updateTxnDatetime:
-// transmission_date is MMddhhmmss; the current year is prepended and shifted
-// back a year if it lands in the future.
 // UpdateTxnDatetime converts the network's DE7 timestamp into a local-time
 // instant.
 //

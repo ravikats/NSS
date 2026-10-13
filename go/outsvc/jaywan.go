@@ -178,7 +178,7 @@ func (s *OutgoingService) ProcessJaywanOutgoing(ctx context.Context, insCode, us
 		return "Failed"
 	}
 	s.insertJaywanIntoOutgoingSummary(ctx, user, insCode, intCode, fileName, outgoingLogSerialNumber)
-	if err := s.store.CompleteJaywanPosStatus(ctx, insCode); err != nil {
+	if err := s.store.CompleteJaywanPosStatus(ctx, insCode, fileName); err != nil {
 		logOutsvc("CompleteJaywanPosStatus", err)
 	}
 	// generateOutgoingSummaryPDF is not ported yet.

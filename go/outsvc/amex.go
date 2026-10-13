@@ -170,7 +170,7 @@ func (s *OutgoingService) ProcessAmexOutgoing(ctx context.Context, insCode, user
 		return "Failed"
 	}
 
-	if err := s.store.CompleteAmexPosStatus(ctx, insCode); err != nil {
+	if err := s.store.CompleteAmexPosStatus(ctx, insCode, fileName); err != nil {
 		logOutsvc("CompleteAmexPosStatus", err)
 		return "Failed"
 	}

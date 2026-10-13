@@ -61,8 +61,9 @@ func envInt(key string, def int) int {
 	return def
 }
 
-// envDur reads a duration in seconds, so the env file stays consistent with
-// the other integer knobs. A malformed or non-positive value falls back to def.
+// envDurSeconds reads a duration in seconds, so the env file stays consistent
+// with the other integer knobs. A malformed or non-positive value falls back
+// to def.
 func envDurSeconds(key string, def time.Duration) time.Duration {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

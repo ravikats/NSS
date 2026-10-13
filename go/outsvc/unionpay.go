@@ -184,7 +184,7 @@ func (s *OutgoingService) ProcessUnionPayOutgoing(ctx context.Context, insCode, 
 		// log is marked complete, so a malformed file never reaches the rows or
 		// the settlement cycle. Report-only by default; UNIONPAY_VALIDATION_STRICT
 		// aborts (work stays 9, file log -> failure).
-		if rep := s.validateUnionPayFile(fileName, insShortName); rep != nil && !rep.OK() {
+		if rep := s.validateUnionPayFile(ctx, fileName, insShortName); rep != nil && !rep.OK() {
 			if s.cfg.UnionPayValidationStrict {
 				s.updateOutFilelog(ctx, insCode, outgoingLogSerialNumber, fileName, nil)
 				return "Outgoing Failed"
@@ -212,12 +212,15 @@ func (s *OutgoingService) ProcessUnionPayOutgoing(ctx context.Context, insCode, 
 			logOutsvc("UpdateUnionPayWorkStatuses", err)
 			return "Failed"
 		}
+		// Scoped to THIS batch's file: the loop writes one file per sequence, so
+		// completing once after the loop would leave every batch but the last
+		// with POS rows still at gen_status 4.
+		if err := s.store.CompleteUnionPayPosStatus(ctx, insCode, fileName); err != nil {
+			logOutsvc("CompleteUnionPayPosStatus", err)
+			return "Failed"
+		}
 	}
 
-	if err := s.store.CompleteUnionPayPosStatus(ctx, insCode); err != nil {
-		logOutsvc("CompleteUnionPayPosStatus", err)
-		return "Failed"
-	}
 	s.moveUnionPayWorkToData(ctx, insCode, user)
 	return "Success"
 }
@@ -340,7 +343,7 @@ func (s *OutgoingService) moveUnionPayWorkToData(ctx context.Context, insCode, u
 // validateUnionPayFile validates a generated settlement file and records the
 // outcome for the inquiry UI (GET /outgoing/v1/validations). Returns nil when
 // the file cannot be read, so a missing file is not double-reported.
-func (s *OutgoingService) validateUnionPayFile(fileName, insShortName string) *upval.Report {
+func (s *OutgoingService) validateUnionPayFile(ctx context.Context, fileName, insShortName string) *upval.Report {
 	path := filepath.Join(s.cfg.ReconOutDir, fileName)
 	rep, err := upval.ValidateFile(path)
 	if err != nil {
@@ -357,7 +360,7 @@ func (s *OutgoingService) validateUnionPayFile(fileName, insShortName string) *u
 		Summary:     rep.Summary(),
 		ValidatedAt: s.now(),
 	}
-	s.recordValidation(res)
+	s.recordValidation(ctx, res)
 	s.writeUnionPayValidationReport(rep)
 	return rep
 }

@@ -37,7 +37,7 @@ func TestValidationRecordedOnSuccess(t *testing.T) {
 	if got := s.ProcessMercuryOutgoing(context.Background(), 1, 4, 5, "IRF", &from, &to); got != "Success" {
 		t.Fatalf("ProcessMercuryOutgoing = %q, want Success", got)
 	}
-	results := s.Validations()
+	results := s.Validations(context.Background())
 	if len(results) != 1 {
 		t.Fatalf("Validations() len = %d, want 1", len(results))
 	}
@@ -45,7 +45,7 @@ func TestValidationRecordedOnSuccess(t *testing.T) {
 	if !v.OK {
 		t.Errorf("OK = false, errors = %v", v.Errors)
 	}
-	if v.File != "Documents.2401392320260803" {
+	if v.File != "Documents.24013923.20260803" {
 		t.Errorf("File = %q", v.File)
 	}
 	if v.Network != "MERCURY" || v.Batches != 1 || v.TxnCount != 1 {
@@ -90,7 +90,13 @@ func TestValidationsEndpointEmptyBeforeFirstRun(t *testing.T) {
 }
 
 func TestNewValidationResultCarriesErrors(t *testing.T) {
-	res := newValidationResult("MERCURY", "Documents.1", nil, context.DeadlineExceeded, time.Now())
+	res := &ValidationResult{
+		Network: "MERCURY",
+		File:    "Documents.1",
+		OK:      false,
+		Errors:  []string{context.DeadlineExceeded.Error()},
+		ValidatedAt: time.Now(),
+	}
 	if res.OK {
 		t.Error("OK = true, want false")
 	}
@@ -102,9 +108,9 @@ func TestNewValidationResultCarriesErrors(t *testing.T) {
 func TestValidationsHistoryIsCapped(t *testing.T) {
 	s, _ := mercurySvcForValidation(t)
 	for i := 0; i < maxValidationHistory+10; i++ {
-		s.recordValidation(&ValidationResult{File: "f", OK: true})
+		s.recordValidation(context.Background(), &ValidationResult{File: "f", OK: true})
 	}
-	if got := len(s.Validations()); got != maxValidationHistory {
+	if got := len(s.Validations(context.Background())); got != maxValidationHistory {
 		t.Errorf("history len = %d, want %d", got, maxValidationHistory)
 	}
 }

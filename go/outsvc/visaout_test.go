@@ -14,16 +14,34 @@ import (
 // panics on any other method.
 type visaFakeStore struct {
 	Store
-	work         []*VisaAcqTxnWorkEntity
-	data         []*VisaAcqTxnDataEntity
-	fileLogs     []*OutGoingFileProcessingEntity
-	nextSerial   int64
-	acqBin       *AcquirerBinsEntity
-	interfaces   *InterfacesEntity
-	format       *FileFormatsEntity
-	businessDate *BusinessDateEntity
-	summaries    []*OutgoingSummaryEntity
-	posDone      bool
+	work          []*VisaAcqTxnWorkEntity
+	data          []*VisaAcqTxnDataEntity
+	fileLogs      []*OutGoingFileProcessingEntity
+	nextSerial    int64
+	acqBin        *AcquirerBinsEntity
+	interfaces    *InterfacesEntity
+	format        *FileFormatsEntity
+	businessDate  *BusinessDateEntity
+	summaries     []*OutgoingSummaryEntity
+	posDone       bool
+	validationLog []*ValidationResult
+}
+
+func (f *visaFakeStore) SaveValidationResult(ctx context.Context, fileName string, res *ValidationResult) error {
+	v := *res
+	v.File = fileName
+	f.validationLog = append([]*ValidationResult{&v}, f.validationLog...)
+	return nil
+}
+
+func (f *visaFakeStore) LoadValidationResults(ctx context.Context, limit int) ([]*ValidationResult, error) {
+	out := f.validationLog
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	cp := make([]*ValidationResult, len(out))
+	copy(cp, out)
+	return cp, nil
 }
 
 func (f *visaFakeStore) FindFileFormatBySystemCodeAndType(ctx context.Context, sysCode int, typ string) (*FileFormatsEntity, error) {
@@ -200,7 +218,7 @@ func (f *visaFakeStore) DeleteVisaWork(ctx context.Context, ents []*VisaAcqTxnWo
 	return nil
 }
 
-func (f *visaFakeStore) CompleteVisaPosStatus(ctx context.Context, ins int) error {
+func (f *visaFakeStore) CompleteVisaPosStatus(ctx context.Context, ins int, fileId string) error {
 	f.posDone = true
 	return nil
 }
@@ -327,7 +345,7 @@ func TestProcessVisaOutgoingRecordsValidation(t *testing.T) {
 		t.Fatalf("ProcessVisaOutgoing = %q, want Success (report-only)", got)
 	}
 
-	vals := s.Validations()
+	vals := s.Validations(context.Background())
 	// When base2 package is unavailable, validation is a no-op and no validations are recorded.
 	if len(vals) != 0 {
 		t.Fatalf("validations = %d, want 0 (base2 not available)", len(vals))

@@ -50,7 +50,7 @@ type SwitchExtractVo struct {
 	PanSequence               string   `json:"pan_sequence_number,omitempty"`
 	PosCode                   string   `json:"pos_condition_code,omitempty"`
 	TxnFeeAmount              string   `json:"txn_fee_amount,omitempty"`
-	AcqInsIdCode              string   `json:"acquier_id,omitempty"`
+	AcqInsIdCode              string   `json:"acquirer_id,omitempty"`
 	RetRefNumber              string   `json:"rrn,omitempty"`
 	AuthIdResponse            string   `json:"auth_code,omitempty"`
 	ResponseCode              string   `json:"network_response_code,omitempty"`

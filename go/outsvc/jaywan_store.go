@@ -263,17 +263,20 @@ func (s *oracleStore) InsertJaywanWork(ctx context.Context, ents []*JaywanAcqTxn
 	return nil
 }
 
-// CompleteJaywanPosStatus mirrors PosTransactionRepo.completeJaywanPosStatus.
-func (s *oracleStore) CompleteJaywanPosStatus(ctx context.Context, ins int) error {
+// CompleteJaywanPosStatus mirrors PosTransactionRepo.completeJaywanPosStatus,
+// scoped to the file this run produced. Selecting by gen_status alone would let
+// two overlapping generations complete each other's transactions.
+func (s *oracleStore) CompleteJaywanPosStatus(ctx context.Context, ins int, fileId string) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE POS_TRANSACTIONS pos SET
 		  pos.PTR_GEN_STATUS = 6,
 		  pos.PTR_OUT_STATUS = 'Completed'
 		WHERE pos.PTR_RET_REF_NUMBER IN (
-		  SELECT jwn.JWN_RET_REF_NUMBER FROM JAYWAN_ACQ_TXN_WORK jwn WHERE jwn.JWN_GEN_STATUS = 4
+		  SELECT jwn.JWN_RET_REF_NUMBER FROM JAYWAN_ACQ_TXN_WORK jwn
+		  WHERE jwn.JWN_GEN_STATUS = 4 AND jwn.JWN_FILE_ID = :2
 		)
 		AND pos.PTR_SCHEME = 'JAYWAN'
 		AND pos.PTR_GEN_STATUS = 4
-		AND pos.PTR_INS_CODE = :1`, ins)
+		AND pos.PTR_INS_CODE = :1`, ins, fileId)
 	return err
 }

@@ -167,16 +167,17 @@ func (s *oracleStore) InsertUnionPayData(ctx context.Context, ents []*UnionPayAc
 }
 
 // CompleteUnionPayPosStatus mirrors the other networks' POS completion update.
-func (s *oracleStore) CompleteUnionPayPosStatus(ctx context.Context, ins int) error {
+func (s *oracleStore) CompleteUnionPayPosStatus(ctx context.Context, ins int, fileId string) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE POS_TRANSACTIONS pos SET
 		  pos.PTR_GEN_STATUS = 6,
 		  pos.PTR_OUT_STATUS = 'Completed'
 		WHERE pos.PTR_RET_REF_NUMBER IN (
-		  SELECT upt.UPT_RET_REF_NUMBER FROM UP_ACQ_TXN_WORK upt WHERE upt.UPT_GEN_STATUS = 4
+		  SELECT upt.UPT_RET_REF_NUMBER FROM UP_ACQ_TXN_WORK upt
+		  WHERE upt.UPT_GEN_STATUS = 4 AND upt.UPT_FILE_ID = :2
 		)
 		AND pos.PTR_GEN_STATUS = 4
-		AND pos.PTR_INS_CODE = :1`, ins)
+		AND pos.PTR_INS_CODE = :1`, ins, fileId)
 	return err
 }
 

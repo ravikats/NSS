@@ -97,8 +97,9 @@ type OutgoingService struct {
 	crypto CardCrypto
 	now    func() time.Time
 
-	validationMu sync.Mutex
-	validations  []*ValidationResult
+	validationMu      sync.Mutex
+	validations       []*ValidationResult
+	validationsLoaded bool
 }
 
 // NewOutgoingService wires the orchestrator.

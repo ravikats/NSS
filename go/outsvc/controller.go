@@ -77,7 +77,7 @@ func (c *OutgoingController) RevertLastCollectionOnly(w http.ResponseWriter, r *
 // reconciliation outcome per generated file.
 func (c *OutgoingController) Validations(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	results := c.svc.Validations()
+	results := c.svc.Validations(r.Context())
 	if results == nil {
 		results = []*ValidationResult{}
 	}

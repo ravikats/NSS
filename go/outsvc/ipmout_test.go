@@ -266,8 +266,25 @@ type fakeStore struct {
 	report             []*OutgoingReportDataWorkEntity
 	data               []*McAcqTxnDataEntity
 	posStatusCompleted bool
-	posCompletedFileId string
 	failedFileId       string
+	validationLog      []*ValidationResult
+}
+
+func (f *fakeStore) SaveValidationResult(ctx context.Context, fileName string, res *ValidationResult) error {
+	v := *res
+	v.File = fileName
+	f.validationLog = append([]*ValidationResult{&v}, f.validationLog...)
+	return nil
+}
+
+func (f *fakeStore) LoadValidationResults(ctx context.Context, limit int) ([]*ValidationResult, error) {
+	out := f.validationLog
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	cp := make([]*ValidationResult, len(out))
+	copy(cp, out)
+	return cp, nil
 }
 
 func (f *fakeStore) FindMcWorkBetween(ctx context.Context, ins, status int, from, to time.Time) ([]*McAcqTxnWorkEntity, error) {
@@ -332,12 +349,12 @@ func (f *fakeStore) CompletePosStatus(ctx context.Context, ins int) error {
 	return nil
 }
 
-// FindMcWorkByFileId is the file-scoped selector generation now uses; it must
-// mirror the claim, which stamps the file name.
+// FindMcWorkByFileId mirrors the real query: only rows carrying this run's
+// flight name are in flight for it.
 func (f *fakeStore) FindMcWorkByFileId(ctx context.Context, ins int, fileId string, status int) ([]*McAcqTxnWorkEntity, error) {
 	var out []*McAcqTxnWorkEntity
 	for _, w := range f.work {
-		if w.FileID == fileId && w.GeneralStatus == status {
+		if w.GeneralStatus == status && w.FileID == fileId {
 			out = append(out, w)
 		}
 	}
@@ -346,7 +363,6 @@ func (f *fakeStore) FindMcWorkByFileId(ctx context.Context, ins int, fileId stri
 
 func (f *fakeStore) CompletePosStatusForFile(ctx context.Context, ins int, fileId string) error {
 	f.posStatusCompleted = true
-	f.posCompletedFileId = fileId
 	return nil
 }
 
@@ -405,7 +421,7 @@ func TestIpmProEndToEnd(t *testing.T) {
 		t.Errorf("summary fileId = %q, want %q", st.summaries[0].FileId, fileID)
 	}
 	if !st.posStatusCompleted {
-		t.Error("CompletePosStatusForFile not called")
+		t.Error("CompletePosStatus not called")
 	}
 	if len(st.data) != 1 {
 		t.Fatalf("moved data rows = %d, want 1", len(st.data))
@@ -433,7 +449,7 @@ func TestIpmProValidatesGeneratedFile(t *testing.T) {
 	p := NewIpmOutProcessor(dir, filepath.Join(dir, "ipm_reports"), "X", st, crypto)
 
 	var got []*ValidationResult
-	p.SetValidationHook(func(r *ValidationResult) { got = append(got, r) })
+	p.SetValidationHook(func(_ context.Context, r *ValidationResult) { got = append(got, r) })
 
 	from := time.Date(2026, 8, 14, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 8, 14, 23, 59, 59, 0, time.UTC)

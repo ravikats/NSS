@@ -3,6 +3,7 @@ package outsvc
 import (
 	"context"
 	"database/sql"
+	"os"
 	"testing"
 	"time"
 
@@ -17,7 +18,10 @@ import (
 // now goes through TO_DATE(:n,'YYYY-MM-DD HH24:MI:SS') and must honour BOTH
 // bounds exactly.
 func TestWorkRangeQueriesHonourBothBounds(t *testing.T) {
-	dsn := "oracle://NETWORK_SETTLEMENT_UAT:J6erQo6E24@127.0.0.1:1521/FREEPDB1"
+	dsn := os.Getenv("ORACLE_DSN")
+	if dsn == "" {
+		t.Skip("ORACLE_DSN not set; live-DB guard skipped")
+	}
 	db, err := sql.Open("oracle", dsn)
 	if err != nil {
 		t.Fatal(err)
