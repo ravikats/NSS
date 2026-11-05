@@ -26,3 +26,9 @@ decompiled/
 
 # OS
 .DS_Store
+
+# Local CDC replay tool: the built binary and its payload dump carry live card
+# data and vault tokens, so neither is ever committed. The tool itself lives in
+# go/cmd/cdc-emulator/.
+go/cdc-emulator
+payload.json
