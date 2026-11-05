@@ -9,7 +9,7 @@ fixes) and keep narrative output to a minimum unless the user asks for detail.
 version-controlled in the `switch` repo as of commit `c683dca`. Paths below are
 written relative to that tree; substitute the real path when working.
 
-Do NOT build from `IRF/go`. Build from **`switch/NSS/irf-go`**.
+**`IRF/go` was deleted on 2026-11-06** (the tree, with everything it had, now lives at `switch/NSS/irf-go` in the switch repository). Build from there; this repository is Java-era reference only.
 
 **CORRECTED 2026-10-13.** The paragraph this replaces was partly wrong and caused a
 real incident: it claimed `IRF/go` was missing the `mercury`/`unionpay`/`amex`
