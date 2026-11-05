@@ -139,10 +139,20 @@ comment as unimplemented intent, not behaviour.
 6. Rows end in `MERCURY_ACQ_TXN_DATA` with `MAT_GEN_STATUS=4`; POS rows get
    `PTR_GEN_STATUS=6`/`Completed`; `OUT_FILE_LOG` rows get status 4.
 
-Known Mercury EIF format notes (2026-08-16): amounts in XD/UT/UY are plain
-decimals with the currency's fraction digits (`10.00`, not `1000`); XM
-CAMTA/CAMTO are 12-digit minor units (value×100); zero surcharges are omitted
-from XD field 45; AURCDE (XD field 54) stays empty.
+Known Mercury EIF format notes — **reconciled 2026-10-29 against the authoritative
+`Documents.24013923.20260916.002` file** (user decision: that file wins): XD
+CAMTR (field 9) and SURFEE (field 46) are 16-char zero-filled signed decimals
+with the currency's fraction digits (`0000000000505.00`); SURFEE 0 emits a bare
+`0`, never blank; UT/UY BTACR/BTADR/RCACR/RCADR are plain decimals keeping the
+leading zero (`0.00`, not `.00`); UY RNAMT (field 11) carries 3 decimals
+(`17096.000`); XD AURCDE (index 54, field 55) carries `MAT_RESP_CODE` (`00`),
+it is NOT blank. The XD record has exactly 64 fields, matching decompiled
+`MercuryFileServiceImpl` — an earlier port had a 65th trailing blank (dropped
+2026-10-29). XD fields 39/40 (CHOLDP/CARDP) and 44 (NRID) come from
+MAT_CH_PRESENT / MAT_CARD_PRESENT / MAT_MERCURY_REF_ID — if they blank out in a
+real file, check the staged work rows, not the generator. XM CAMTA/CAMTO remain
+12-digit minor units (value×100). (Supersedes the 2026-08-16 scheme-sample
+notes that dropped leading zeros, blanked SURFEE 0 and blanked AURCDE.)
 
 ## New TLF service packages
 - `go/tlfsvc` — online TLF processor (payload.go, mapper.go, store.go, service.go,

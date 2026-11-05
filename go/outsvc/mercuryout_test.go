@@ -271,8 +271,9 @@ func TestMercuryFileBuilderMatchesJava(t *testing.T) {
 		t.Errorf("batch header line = %q", lines[1])
 	}
 
-	// t1 (debit AA): XD with decrypted PAN and amount as a plain decimal
-	// (10.00 -> "10.00"), per the scheme sample's CAMTR format.
+	// t1 (debit AA): XD with decrypted PAN and CAMTR as a 16-char zero-filled
+	// decimal (10.00 -> "000000000010.00"), per the authoritative 16 Sep 2026
+	// file's CAMTR encoding.
 	xd1 := lines[2]
 	if !strings.HasPrefix(xd1, "FRRC>XD>RK>010>MP>001>001>") {
 		t.Fatalf("XD1 = %q", xd1)
@@ -281,20 +282,21 @@ func TestMercuryFileBuilderMatchesJava(t *testing.T) {
 	if xd1Fields[7] != "6690109700100010" {
 		t.Errorf("XD1 PAN = %q", xd1Fields[7])
 	}
-	if xd1Fields[8] != "10.00" {
-		t.Errorf("XD1 amount = %q, want 10.00 (decimal)", xd1Fields[8])
+	if xd1Fields[8] != "0000000000010.00" {
+		t.Errorf("XD1 amount = %q, want 0000000000010.00 (padded decimal)", xd1Fields[8])
 	}
 	if xd1Fields[9] != "260803" {
 		t.Errorf("XD1 date = %q, want 260803 (yyMMdd)", xd1Fields[9])
 	}
-	// No surcharge -> field 45 SURFEE is empty (sample omits zero surcharges).
-	if xd1Fields[45] != "" {
-		t.Errorf("XD1 surcharge = %q, want empty", xd1Fields[45])
+	// Zero surcharge -> field 45 SURFEE renders "0" (formatAmount's zero/
+	// null case); it is not blanked or padded.
+	if xd1Fields[45] != "0" {
+		t.Errorf("XD1 surcharge = %q, want 0", xd1Fields[45])
 	}
-	// AURCDE (field 54) must stay empty; the response code has no home in the
-	// XD record (the scheme sample leaves it blank).
-	if xd1Fields[54] != "" {
-		t.Errorf("XD1 field 54 (AURCDE) = %q, want empty", xd1Fields[54])
+	// AURCDE (index 54, field 55) carries the stored response code; the
+	// authoritative file shows "00" there.
+	if xd1Fields[54] != "00" {
+		t.Errorf("XD1 field 54 (AURCDE) = %q, want 00", xd1Fields[54])
 	}
 
 	// t2 (credit TF with surcharge): XD + XM (pos entry 051).
@@ -303,11 +305,11 @@ func TestMercuryFileBuilderMatchesJava(t *testing.T) {
 		t.Fatalf("XD2 = %q", xd2)
 	}
 	xd2Fields := strings.Split(xd2, ">")
-	if xd2Fields[8] != "951.00" {
-		t.Errorf("XD2 amount = %q, want 951.00", xd2Fields[8])
+	if xd2Fields[8] != "0000000000951.00" {
+		t.Errorf("XD2 amount = %q, want 0000000000951.00 (padded decimal)", xd2Fields[8])
 	}
-	if xd2Fields[45] != "1.00" {
-		t.Errorf("XD2 surcharge = %q, want 1.00 (field 45)", xd2Fields[45])
+	if xd2Fields[45] != "0000000000001.00" {
+		t.Errorf("XD2 surcharge = %q, want 0000000000001.00 (padded, field 45)", xd2Fields[45])
 	}
 	// XM record follows XD2 (index 4).
 	if !strings.HasPrefix(lines[4], "FRRC>XM>RK>010>MP>001>002>") {
@@ -334,13 +336,14 @@ func TestMercuryFileBuilderMatchesJava(t *testing.T) {
 
 	// Trailer: UT (1 credit 951.00, 2 debits 10.00+100.00) then UY with
 	// net = credit - debit. Surcharges are excluded from these totals (the
-	// Java builder only sums txnAmount). Amounts are plain decimals.
+	// Java builder only sums txnAmount). UT/UY amounts are plain decimals
+	// with the leading zero kept; RNAMT is declared at 3 decimals.
 	ut := lines[8]
 	if ut != "FRRC>UT>RK>010>MP>001>1>951.00>2>110.00" {
 		t.Errorf("UT = %q", ut)
 	}
 	uy := lines[9]
-	if uy != "FRRC>UY>RK>010>MP>1>951.00>2>110.00>01.000>841.00>>>>>>" {
+	if uy != "FRRC>UY>RK>010>MP>1>951.00>2>110.00>01.000>841.000>>>>>>" {
 		t.Errorf("UY = %q", uy)
 	}
 
@@ -443,9 +446,10 @@ func TestMercuryBatchFlipAt60(t *testing.T) {
 	if len(ut) != 2 {
 		t.Fatalf("batch trailers = %d, want 2", len(ut))
 	}
-	// Second UT should report the single batch-2 txn (61.00 as a decimal); the
-	// zero credit amount renders ".00" per the scheme sample.
-	if ut[1] != "FRRC>UT>RK>010>MP>002>0>.00>1>61.00" {
+	// Second UT should report the single batch-2 txn (61.00 as a decimal); a
+	// zero credit amount renders "0.00" (leading zero kept), per the
+	// authoritative 16 Sep 2026 file.
+	if ut[1] != "FRRC>UT>RK>010>MP>002>0>0.00>1>61.00" {
 		t.Errorf("second UT = %q", ut[1])
 	}
 	_ = work
@@ -491,7 +495,10 @@ func TestMercuryHelpers(t *testing.T) {
 	}{
 		{"amount 10", mercuryFormatAmount(10.00, mult), "10.00"},
 		{"amount 951", mercuryFormatAmount(951.00, mult), "951.00"},
-		{"amount zero", mercuryFormatAmount(0, mult), ".00"},
+		{"amount zero", mercuryFormatAmount(0, mult), "0.00"},
+		{"padded 505", mercuryPaddedAmount(505.00, mult), "0000000000505.00"},
+		{"padded 10", mercuryPaddedAmount(10.00, mult), "0000000000010.00"},
+		{"padded negative", mercuryPaddedAmount(-2.5, mult), "-0000000000002.50"},
 		{"amount half-up", mercuryFormatAmount(10.005, mult), "10.01"},
 		{"amount12 10", mercuryAmount12(10.00, mult), "000000001000"},
 		{"amount12 1.5", mercuryAmount12(1.50, mult), "000000000150"},

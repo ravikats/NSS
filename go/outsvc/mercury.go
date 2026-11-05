@@ -481,24 +481,32 @@ func mercuryUT(recapNumber, batchNo string, creditCount int, creditAmount *big.R
 func mercuryUY(recapNumber string, creditCount int, creditAmount *big.Rat, debitCount int, debitAmount *big.Rat, mult *big.Rat) string {
 	fd := mercuryFractionDigits(mult)
 	netAmount := new(big.Rat).Abs(new(big.Rat).Sub(creditAmount, debitAmount))
+	// RNAMT is declared at 3 decimals in the reconciled 16 Sep 2026 file
+	// ("17096.000"). netAmount is scaled to minor units by mult (e.g. x100),
+	// so rescale it to the 3-decimal scale (x1000) before rendering.
+	scale3 := new(big.Rat).Mul(netAmount, big.NewRat(pow10int(3-fd), 1))
 	return strings.Join([]string{
 		mercuryTRANS, "UY", mercurySFTER, recapNumber, mercuryDFTER,
 		fmt.Sprintf("%01d", creditCount), mercuryScaledDecimal(creditAmount, fd),
 		fmt.Sprintf("%01d", debitCount), mercuryScaledDecimal(debitAmount, fd),
-		"01.000", mercuryScaledDecimal(netAmount, fd),
+		"01.000", mercuryScaledDecimal(scale3, 3),
 		"", "", "", "", "", "",
 	}, ">")
 }
 
 func mercuryXD(txn *MercuryAcqTxnWorkEntity, recapNumber, batchNo, seqNo string, response map[string]string, mult *big.Rat) string {
 	p := response[txn.EncryptedCardNumber]
-	surcharge := ""
+	// SURFEE renders exactly like CAMTR ("0000000000001.00"), except a zero
+	// surcharge emits "0" (formatAmount's zero/null case). Per the reconciled
+	// 16 Sep 2026 file: the earlier "zero surcharges are omitted" behaviour
+	// blanked the field and did not match the file the network accepts.
+	surcharge := "0"
 	if txn.SurchargeAmount != 0 {
-		surcharge = mercuryFormatAmount(txn.SurchargeAmount, mult)
+		surcharge = mercuryPaddedAmount(txn.SurchargeAmount, mult)
 	}
 	return strings.Join([]string{
 		mercuryTRANS, "XD", mercurySFTER, recapNumber, mercuryDFTER, batchNo, seqNo,
-		p, mercuryFormatAmount(txn.TxnAmount, mult), mercuryDate(txn.TxnDate), "TS",
+		p, mercuryPaddedAmount(txn.TxnAmount, mult), mercuryDate(txn.TxnDate), "TS",
 		mercuryText(txn.ChargeType), mercuryFixed(txn.MeName, 36), mercuryFixed(txn.MeCity, 26),
 		mercuryText(txn.GeoArea), "000", mercuryText(txn.TypeOfCharge), mercuryReferenceNumber(),
 		mercuryText(txn.ApprovalCode), mercuryText(txn.MerchantId), "", "", "",
@@ -509,7 +517,7 @@ func mercuryXD(txn *MercuryAcqTxnWorkEntity, recapNumber, batchNo, seqNo string,
 		mercuryText(txn.CardInputMode), "", "", mercuryTextLen(txn.MercuryRefId, 15),
 		mercuryText(txn.CardInputCapability), surcharge,
 		"", mercuryText(txn.GeoArea), "", "", "", "", "", "",
-		"", "", "", "", "", "", "", "", "", "",
+		mercuryText(txn.ResponseCode), "", "", "", "", "", "", "", "", "",
 	}, ">")
 }
 
@@ -610,9 +618,9 @@ func mercuryMinorUnits(r *big.Rat) string {
 }
 
 // mercuryFormatAmount renders a signed amount as a plain decimal with the
-// currency's fraction digits (e.g. 10.00 -> "10.00", 0 -> ".00", 10.005 ->
-// "10.01"), matching the Mercury scheme sample's CAMTR/SURFEE and UT/UY
-// amounts. Unlike mercuryAmount it preserves the sign.
+// currency's fraction digits (e.g. 10.00 -> "10.00", 0 -> "0.00", 10.005 ->
+// "10.01"), matching the authoritative 16 Sep 2026 file's UT/UY amounts. Unlike
+// mercuryAmount it preserves the sign.
 func mercuryFormatAmount(v float64, mult *big.Rat) string {
 	scaled := new(big.Rat).Mul(decimalRat(v), mult)
 	return mercuryScaledDecimal(scaled, mercuryFractionDigits(mult))
@@ -638,8 +646,8 @@ func mercuryFractionDigits(mult *big.Rat) int {
 
 // mercuryScaledDecimal renders a minor-unit-scaled amount as a plain decimal
 // with fd fraction digits, rounding half-up (BigDecimal semantics). Values with
-// a zero integer part drop the leading zero (".00" for zero), matching the
-// scheme sample.
+// a zero integer part keep their leading zero ("0.00"), matching the
+// authoritative 16 Sep 2026 file (UT/UY zero amounts render "0.00", not ".00").
 func mercuryScaledDecimal(r *big.Rat, fd int) string {
 	n := mercuryRatHalfUpBig(r)
 	neg := n.Sign() < 0
@@ -658,10 +666,26 @@ func mercuryScaledDecimal(r *big.Rat, fd int) string {
 	if neg {
 		out = "-" + out
 	}
-	if strings.HasPrefix(out, "0.") {
-		out = out[1:]
-	}
 	return out
+}
+
+// mercuryPaddedAmount renders an amount the way the authoritative
+// Documents.24013923.20260916 file's CAMTR/SURFEE fields are encoded: a signed
+// decimal with the currency's fraction digits, left-filled with zeros to 16
+// characters (the sign stays leftmost, e.g. "-0000000000002.50").
+func mercuryPaddedAmount(v float64, mult *big.Rat) string {
+	dec := mercuryFormatAmount(v, mult)
+	neg := strings.HasPrefix(dec, "-")
+	if neg {
+		dec = dec[1:]
+	}
+	for len(dec) < 16 {
+		dec = "0" + dec
+	}
+	if neg {
+		return "-" + dec
+	}
+	return dec
 }
 
 // mercuryRatHalfUpBig rounds a Rat to the nearest integer, half away from zero,
