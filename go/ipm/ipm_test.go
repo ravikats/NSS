@@ -36,12 +36,11 @@ func TestValidateSmallFile(t *testing.T) {
 
 	wantMTI := []string{"1644", "1240", "1240", "1240", "1240", "1644"}
 	wantViolations := map[int][]string{
-		// Python: 4 transaction records, each missing DE105 and PDS 0213;
-		// record 5 additionally has no PDS 0170.
-		2: {"DE105_REQUIRED", "MERCHANT_COUNTRY_OF_ORIGIN_REQUIRED"},
-		3: {"DE105_REQUIRED", "MERCHANT_COUNTRY_OF_ORIGIN_REQUIRED"},
-		4: {"DE105_REQUIRED", "MERCHANT_COUNTRY_OF_ORIGIN_REQUIRED"},
-		5: {"ACCEPTOR_CONTACT_REQUIRED", "DE105_REQUIRED", "MERCHANT_COUNTRY_OF_ORIGIN_REQUIRED"},
+		// PDS 0213 is only required when DE18 (MCC) is in configured list
+		2: {"DE105_REQUIRED"},
+		3: {"DE105_REQUIRED"},
+		4: {"DE105_REQUIRED"},
+		5: {"ACCEPTOR_CONTACT_REQUIRED", "DE105_REQUIRED"},
 	}
 
 	for i, r := range results {

@@ -30,6 +30,9 @@ type Rule struct {
 	Delimiter   string   `json:"delimiter"`
 	Subfield    int      `json:"subfield"`
 	Element     string   `json:"element"`
+	MCCs        []string `json:"mccs"`
+	MCCPath     string   `json:"mcc_path"`
+	ExcludeMCCs []string `json:"exclude_mccs"`
 }
 
 // FileRule is one file-level rule from compliance_rules.json.
@@ -153,6 +156,47 @@ func (e *RulesEngine) EvaluateRecord(rec *RecordResult) []Violation {
 	for _, rule := range e.Rules {
 		if len(rule.MTIs) > 0 && !contains(rule.MTIs, rec.MTI) {
 			continue
+		}
+		if len(rule.MCCs) > 0 {
+			mccPath := rule.MCCPath
+			if mccPath == "" {
+				mccPath = "fields.18"
+			}
+			mccVal, mccPresent := rec.Lookup(mccPath)
+			if !mccPresent {
+				continue
+			}
+			mccStr := strings.TrimSpace(mccVal)
+			allowed := false
+			for _, a := range rule.MCCs {
+				if strings.TrimSpace(a) == mccStr {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				continue
+			}
+		}
+		if len(rule.ExcludeMCCs) > 0 {
+			mccPath := rule.MCCPath
+			if mccPath == "" {
+				mccPath = "fields.18"
+			}
+			mccVal, mccPresent := rec.Lookup(mccPath)
+			if mccPresent {
+				mccStr := strings.TrimSpace(mccVal)
+				excluded := false
+				for _, ex := range rule.ExcludeMCCs {
+					if strings.TrimSpace(ex) == mccStr {
+						excluded = true
+						break
+					}
+				}
+				if excluded {
+					continue
+				}
+			}
 		}
 		value, present := rec.Lookup(rule.Path)
 		var target *string
