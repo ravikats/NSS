@@ -10,6 +10,11 @@
 -- This row makes every 66901099xx card classify as Jaywan on this replica. It
 -- is not reference data and must not exist on a shared or UAT schema.
 --
+-- JBS_PRJ_SER_NUMBER must be a real job number: the Java entities declare the
+-- field as a primitive int, so a NULL makes finalize's jaywanProductType fail
+-- with "Null value was assigned to a property ... of primitive type" and every
+-- Jaywan transaction stalls at gen_status 9.
+--
 -- Apply once, as NETWORK_SETTLEMENT_UAT:
 --   sqlplus NETWORK_SETTLEMENT_UAT/***@//localhost:1521/FREEPDB1 @jaywan_test_range_fabricated.sql
 
@@ -20,7 +25,7 @@ INSERT INTO JAYWAN_ISS_ACC_RANGE
    JBS_SERVICE, JBS_CUR_CODE, JBS_ISO_NUM_CUR_CODE, JBS_ACTION_TAKEN,
    JBS_BIN_LENGTH)
 VALUES
-  (SYSTIMESTAMP, 1, NULL, 'FABRICATED TEST RANGE (GEN4 sample)',
+  (SYSTIMESTAMP, 1, 10, 'FABRICATED TEST RANGE (GEN4 sample)',
    999999999, '6690109900', '6690109999', 16,
    'D', 'J', 'Jaywan Test', 3,
    6, 784, 784, 'A',
