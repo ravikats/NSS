@@ -1,0 +1,25 @@
+-- Remaining DCF fields for the Jaywan mapping (v1.0 rows 26 / 28 / 35).
+--
+-- POS_TRANSACTIONS
+--   PTR_MC_SEQ_NUMBER     6221 F29 pos 243-244  Multiple Clearing Sequence Number
+--   PTR_MC_SEQ_COUNT      6221 F30 pos 245-246  Multiple Clearing Sequence Count
+--   PTR_ACCEPTOR_SUBDIVISION 6291 F4 pos 54-56  Acceptor Country Subdivision Code
+--
+-- JAYWAN_ACQ_TXN_WORK / _DATA keep the sequence pair so <nFulParInd> can be
+-- decided at generation time. The subdivision is resolved into JWN_ME_STATE_CODE
+-- by the split (6291.F4 -> 6221 state -> city -> AE).
+--
+-- Apply once, as NETWORK_SETTLEMENT_UAT:
+--   sqlplus NETWORK_SETTLEMENT_UAT/***@//localhost:1521/FREEPDB1 @jaywan_fulpar_emirate.sql
+
+ALTER TABLE POS_TRANSACTIONS ADD (PTR_MC_SEQ_NUMBER VARCHAR2(2));
+ALTER TABLE POS_TRANSACTIONS ADD (PTR_MC_SEQ_COUNT VARCHAR2(2));
+ALTER TABLE POS_TRANSACTIONS ADD (PTR_ACCEPTOR_SUBDIVISION CHAR(3));
+
+ALTER TABLE JAYWAN_ACQ_TXN_WORK ADD (JWN_MC_SEQ_NUMBER VARCHAR2(2));
+ALTER TABLE JAYWAN_ACQ_TXN_WORK ADD (JWN_MC_SEQ_COUNT VARCHAR2(2));
+
+ALTER TABLE JAYWAN_ACQ_TXN_DATA ADD (JWN_MC_SEQ_NUMBER VARCHAR2(2));
+ALTER TABLE JAYWAN_ACQ_TXN_DATA ADD (JWN_MC_SEQ_COUNT VARCHAR2(2));
+
+COMMIT;
