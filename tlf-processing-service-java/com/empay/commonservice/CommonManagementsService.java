@@ -23,6 +23,8 @@ import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.LocalDate;
 import com.empay.common.entities.FileUploadLogEntity;
 import java.util.Objects;
@@ -229,7 +231,27 @@ public class CommonManagementsService
         return entity;
     }
     
+    /**
+     * Converts the network DE7 transaction timestamp (MMDDHHMMSS, UTC) to the
+     * switch's local date and time.
+     *
+     * The incoming payload carries the transaction time in UTC, and DE7 has no
+     * year, so the year is inferred first. Previously the digits were parsed
+     * straight into a LocalDateTime and stored verbatim -- but LocalDateTime
+     * carries no zone, so the value kept its UTC wall-clock and
+     * POS_TRANSACTIONS.PTR_TXN_DATE_TIME read 5.5h behind the switch clock on
+     * IST. The conversion has to be explicit; there is no zone on the type to do
+     * it implicitly.
+     *
+     * @param dateTime MMDDHHMMSS as sent by the network, in UTC. May be null.
+     * @return local date and time, or null when the input is unusable.
+     */
     public LocalDateTime updateTxnDatetime(final String dateTime) {
+        // The staged path is only annotation-validated on the happy path, so
+        // guard here rather than letting substring() throw on a short value.
+        if (dateTime == null || dateTime.length() < 4) {
+            return null;
+        }
         Integer year = LocalDateTime.now().getYear();
         final String txnDate = year + dateTime.substring(0, 4);
         final LocalDate dateToCheck = LocalDate.parse(txnDate, DateTimeFormatter.ofPattern("yyyyMMdd"));
@@ -238,11 +260,24 @@ public class CommonManagementsService
         }
         final String stringTobePadded = year + dateTime;
         final StringBuilder sb = new StringBuilder(stringTobePadded);
-        if (stringTobePadded.length() < 14) {
-            sb.append("0");
+        // Pad to a full yyyyMMddHHmmss. A single append is not enough: any
+        // input shorter than 13 would still leave the string too short for the
+        // substring below.
+        while (sb.length() < 14) {
+            sb.append('0');
         }
-        final String paddedString = sb.toString();
-        return LocalDateTime.parse(paddedString.substring(0, 8) + " " + paddedString.substring(8, 10) + ":" + String.valueOf(paddedString.subSequence(10, 12)) + ":" + paddedString.substring(12, 14), this.formatter);
+        final String paddedString = sb.substring(0, 14);
+        try {
+            final LocalDateTime utc = LocalDateTime.parse(
+                    paddedString.substring(0, 8) + " " + paddedString.substring(8, 10) + ":"
+                            + paddedString.substring(10, 12) + ":" + paddedString.substring(12, 14),
+                    this.formatter);
+            // The payload value is UTC; say so, then shift to the switch zone.
+            // Stored as LocalDateTime, so the column keeps a local wall clock.
+            return utc.atZone(ZoneOffset.UTC).withZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime();
+        } catch (final RuntimeException e) {
+            return null;
+        }
     }
     
     public void moveFile(final String inputPath, final String fileName, final String insShortName, final String property) {

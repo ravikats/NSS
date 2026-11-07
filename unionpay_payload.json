@@ -14,7 +14,7 @@
     "local_date": "0708",
     "exp_date": "3010",
     "mcc": "5411",
-    "acquier_id": "24160784",
+    "acquirer_id": "24160784",
     "pos_entry_mode": "051",
     "pan_sequence_number": "001",
     "txn_fee_amount": "",
